@@ -1,6 +1,6 @@
 # =============================================================================
 # MosDNS-X Configuration for doh.bibica.net
-# Architecture: Clean DNS, ECS CDN, Domain Routing with Persistent Redis Cache
+# Architecture: Clean DNS, ECS CDN, Domain Routing with Memory Cache
 # =============================================================================
 
 # ============================================================================
@@ -321,6 +321,14 @@ plugins:
 servers:
   - exec: main
     listeners:
+      # --- DNS-over-UDP (Standard DNS) ---
+      - protocol: udp
+        addr: "0.0.0.0:53"
+
+      # --- DNS-over-TCP (Standard DNS) ---
+      - protocol: tcp
+        addr: "0.0.0.0:53"
+
       # --- DNS-over-HTTPS (DoH) ---
       - protocol: https
         addr: "0.0.0.0:443"
@@ -346,3 +354,4 @@ servers:
         addr: "0.0.0.0:853"
         cert: "/home/lego/certificates/doh.bibica.net.crt"
         key: "/home/lego/certificates/doh.bibica.net.key"
+
