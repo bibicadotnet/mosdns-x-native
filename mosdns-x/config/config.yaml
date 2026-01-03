@@ -1,5 +1,5 @@
 # =============================================================================
-# MosDNS-X Configuration for doh.bibica.net
+# MosDNS-X Configuration for dns.bibica.net
 # Architecture: Clean DNS, ECS CDN, Domain Routing with Memory Cache
 # =============================================================================
 
@@ -7,7 +7,7 @@
 # LOGGING CONFIGURATION - System Events & Error Tracking
 # ============================================================================
 log:
-  level: debug # Options: debug, info, error, warn
+  level: info # Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
@@ -333,25 +333,24 @@ servers:
       - protocol: https
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
-        cert: "/home/lego/certificates/doh.bibica.net.crt"
-        key: "/home/lego/certificates/doh.bibica.net.key"
+        cert: "/home/lego/certificates/dns.bibica.net.crt"
+        key: "/home/lego/certificates/dns.bibica.net.key"
 
       # --- DNS-over-HTTPS (DoH) ---
       - protocol: h3
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
-        cert: "/home/lego/certificates/doh.bibica.net.crt"
-        key: "/home/lego/certificates/doh.bibica.net.key"
+        cert: "/home/lego/certificates/dns.bibica.net.crt"
+        key: "/home/lego/certificates/dns.bibica.net.key"
 
       # --- DNS-over-TLS (DoT) ---
       - protocol: tls
         addr: "0.0.0.0:853"
-        cert: "/home/lego/certificates/doh.bibica.net.crt"
-        key: "/home/lego/certificates/doh.bibica.net.key"
+        cert: "/home/lego/certificates/dns.bibica.net.crt"
+        key: "/home/lego/certificates/dns.bibica.net.key"
 
       # --- DNS-over-QUIC (DoQ) ---
       - protocol: quic
         addr: "0.0.0.0:853"
-        cert: "/home/lego/certificates/doh.bibica.net.crt"
-        key: "/home/lego/certificates/doh.bibica.net.key"
-
+        cert: "/home/lego/certificates/dns.bibica.net.crt"
+        key: "/home/lego/certificates/dns.bibica.net.key"
