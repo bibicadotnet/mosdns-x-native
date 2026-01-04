@@ -103,12 +103,12 @@ plugins:
     args:
       cname: ["provider:cdn_domains"]
 
-  # ----- Redis Cache -----
+  # ----- Memory Cache -----
   # Cache for Google domains (with ECS)
   - tag: google_cache
     type: cache
     args:
-      size: 262144
+      size: 131072
       compress_resp: true
       cache_everything: true
       lazy_cache_ttl: 86400
@@ -128,7 +128,7 @@ plugins:
   - tag: cdn_cname_cache
     type: cache
     args:
-      size: 262144
+      size: 131072
       compress_resp: true
       cache_everything: true
       lazy_cache_ttl: 86400
@@ -148,7 +148,7 @@ plugins:
   - tag: cloudflare_cache
     type: cache
     args:
-      size: 262144
+      size: 131072
       compress_resp: true
       cache_everything: false
       lazy_cache_ttl: 86400
@@ -354,3 +354,4 @@ servers:
         addr: "0.0.0.0:853"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
+
