@@ -46,6 +46,14 @@ data_providers:
 # PLUGINS CONFIGURATION - Functional Modules & Matchers
 # ============================================================================
 plugins:
+  # ----- Query Matchers -----
+  # Matcher for localhost clients
+  - tag: query_matcher_localhost
+    type: query_matcher
+    args:
+      client_ip:
+        - "127.0.0.0/8"
+
   # ----- Query Type Matchers -----
   - tag: query_is_ptr
     type: query_matcher
@@ -166,19 +174,19 @@ plugins:
     args:
       upstream:
         - addr: "https://bu0eg1tdzu.cloudflare-gateway.com/dns-query"
-
+  
   - tag: upstream_google
     type: fast_forward
     args:
       upstream:
         - addr: "https://8.8.8.8/dns-query"
-
+  
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
         - addr: "https://dns.mullvad.net/dns-query"
-
+  
   - tag: upstream_cloudflare
     type: fast_forward
     args:
@@ -195,7 +203,6 @@ plugins:
         # ======================================================================
         # PHASE 1: Request Filtering
         # ======================================================================
-
         # --- Reject ANY Queries (RFC 8482) ---
         # ANY queries are deprecated and often used in DNS amplification attacks
         - _reject_any
@@ -261,10 +268,18 @@ plugins:
         - _query_summary
 
         # --- Route Google Domains ---
-        # Forward to Google DNS with ECS support and TTL adjustment
-        - if: match_google_domain
+        # Forward to Google DNS with ECS support and TTL adjustment (not localhost)
+        - if: "match_google_domain && !query_matcher_localhost"
           exec:
             - ecs_handler
+            - google_cache
+            - upstream_google
+            - ttl_short
+            - _return
+        
+        # Route Google Domains without ECS (localhost only)
+        - if: match_google_domain
+          exec:
             - google_cache
             - upstream_google
             - ttl_short
@@ -324,25 +339,25 @@ servers:
       # --- DNS-over-UDP (Standard DNS) ---
       - protocol: udp
         addr: "0.0.0.0:53"
-
+      
       # --- DNS-over-TCP (Standard DNS) ---
       - protocol: tcp
         addr: "0.0.0.0:53"
-
+      
       # --- DNS-over-HTTPS (DoH) ---
       - protocol: https
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
-
-      # --- DNS-over-HTTPS (DoH) ---
+      
+      # --- DNS-over-HTTP/3 (DoH3) ---
       - protocol: h3
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
-
+      
       # --- DNS-over-TLS (DoT) ---
       - protocol: tls
         addr: "0.0.0.0:853"
@@ -354,4 +369,3 @@ servers:
         addr: "0.0.0.0:853"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
-
