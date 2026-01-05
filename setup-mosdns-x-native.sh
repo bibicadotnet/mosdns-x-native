@@ -517,6 +517,39 @@ if [ -f /home/setup-cron-mosdns-block-allow.sh ]; then
     /home/setup-cron-mosdns-block-allow.sh > /dev/null 2>&1
 fi
 
+# === DNS wrapper command ===
+install -m 755 /dev/stdin /usr/local/bin/dns <<'EOF'
+#!/bin/bash
+case "$1" in
+  restart) exec systemctl restart mosdns ;;
+  start)   exec systemctl start mosdns ;;
+  stop)    exec systemctl stop mosdns ;;
+  status)  exec systemctl status mosdns ;;
+  log)     exec tail -f /home/mosdns-x/log/mosdns.log ;;
+  -v|version)
+    version_output=$(/home/mosdns-x/mosdns version)
+    echo "$version_output"
+    ;;
+  -h|help|"")
+    echo "DNS Management Commands:"
+    echo "  dns start    - Start mosdns service"
+    echo "  dns stop     - Stop mosdns service"
+    echo "  dns restart  - Restart mosdns service"
+    echo "  dns status   - Show service status"
+    echo "  dns log      - View mosdns logs"
+    echo "  dns -v       - Show mosdns version"
+    ;;
+  *)
+    echo "Unknown command: $1"
+    echo "Use 'dns -h' for help"
+    exit 1
+    ;;
+esac
+EOF
+hash -r
+
+print_success "DNS wrapper command created"
+
 SERVER_IP=$(curl -s https://api.ipify.org)
 
 echo ""
@@ -540,19 +573,19 @@ echo "           USAGE INFORMATION"
 echo "=========================================="
 echo ""
 echo "  DNS-over-HTTPS (DoH): https://$DOMAIN/dns-query"
-echo "  DNS-over-TLS (DoT): tls://$DOMAIN"
 echo "  DNS-over-HTTP/3 (DoH3): h3://$DOMAIN/dns-query"
+echo "  DNS-over-TLS (DoT): tls://$DOMAIN"
 echo "  DNS-over-QUIC (DoQ): quic://$DOMAIN"
+echo ""
+print_info "Use encrypted protocols (DoH/DoT/DoQ) for public access"
 echo ""
 echo "=========================================="
 echo "          MANAGEMENT COMMANDS"
 echo "=========================================="
 echo ""
-echo "  - Check status: systemctl status mosdns"
-echo "  - Restart: systemctl restart mosdns"
-echo "  - View logs: journalctl -u mosdns -f"
-echo "  - View mosdns log: tail -f /home/mosdns-x/log/mosdns.log"
-echo "  - Renew cert: /home/lego/renew-cert.sh"
-echo "  - Ad-blocking Cron: updates daily at 2:00 AM"
+echo "  - DNS commands: dns -h"
+echo "  - Certificate renewal: Automated (daily at 2:00 AM)"
+echo "    Manual check: /home/lego/renew-cert.sh"
+echo "  - Ad-blocking lists: Auto-update daily at 2:00 AM"
 echo ""
 print_success "Installation complete!"
