@@ -336,13 +336,13 @@ plugins:
 servers:
   - exec: main
     listeners:
-      # --- DNS-over-UDP (Standard DNS) ---
+      # --- DNS-over-UDP (Standard DNS - localhost testing) ---
       - protocol: udp
-        addr: "0.0.0.0:53"
+        addr: "127.0.0.1:53"
       
-      # --- DNS-over-TCP (Standard DNS) ---
+      # --- DNS-over-TCP (Standard DNS - localhost testing) ---
       - protocol: tcp
-        addr: "0.0.0.0:53"
+        addr: "127.0.0.1:53"
       
       # --- DNS-over-HTTPS (DoH) ---
       - protocol: https
