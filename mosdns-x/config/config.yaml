@@ -336,13 +336,13 @@ plugins:
 servers:
   - exec: main
     listeners:
-      # --- DNS-over-UDP (Standard DNS - localhost testing) ---
+      # --- DNS-over-UDP (Standard DNS) ---
       - protocol: udp
-        addr: "127.0.0.1:53"
+        addr: "0.0.0.0:53"
       
-      # --- DNS-over-TCP (Standard DNS - localhost testing) ---
+      # --- DNS-over-TCP (Standard DNS) ---
       - protocol: tcp
-        addr: "127.0.0.1:53"
+        addr: "0.0.0.0:53"
       
       # --- DNS-over-HTTPS (DoH) ---
       - protocol: https
@@ -369,4 +369,3 @@ servers:
         addr: "0.0.0.0:853"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
-
