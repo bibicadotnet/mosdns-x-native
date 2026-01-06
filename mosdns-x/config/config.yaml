@@ -7,7 +7,7 @@
 # LOGGING CONFIGURATION - System Events & Error Tracking
 # ============================================================================
 log:
-  level: info # Options: debug, info, error, warn
+  level: error # Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
@@ -265,7 +265,7 @@ plugins:
 
         # --- Logging ---
         # Generate summary for non-blocked requests
-        - _query_summary
+        #- _query_summary
 
         # --- Route Google Domains ---
         # Forward to Google DNS with ECS support and TTL adjustment (not localhost)
@@ -369,3 +369,4 @@ servers:
         addr: "0.0.0.0:853"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
+
