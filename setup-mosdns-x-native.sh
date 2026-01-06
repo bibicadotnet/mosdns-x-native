@@ -526,9 +526,52 @@ case "$1" in
   stop)    exec systemctl stop mosdns ;;
   status)  exec systemctl status mosdns ;;
   log)     exec tail -f /home/mosdns-x/log/mosdns.log ;;
+  update)
+    echo "Updating mosdns-x and lego..."
+    echo ""
+    
+    # Update mosdns-x
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64) MOSDNS_ARCH="amd64" ;;
+        aarch64|arm64) MOSDNS_ARCH="arm64" ;;
+        armv7l) MOSDNS_ARCH="armv7" ;;
+    esac
+    
+    LATEST=$(curl -s https://api.github.com/repos/pmkol/mosdns-x/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
+    curl -sL "https://github.com/pmkol/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" -o /tmp/mosdns.zip
+    unzip -qo /tmp/mosdns.zip mosdns -d /tmp
+    systemctl stop mosdns
+    mv /tmp/mosdns /home/mosdns-x/mosdns
+    chmod +x /home/mosdns-x/mosdns
+    rm /tmp/mosdns.zip
+    systemctl start mosdns
+    
+    mosdns_version=$(/home/mosdns-x/mosdns version | grep -oP 'version: \K.*')
+	echo "Mosdns-x updated"
+    echo "mosdns $mosdns_version"
+    echo ""
+    
+    # Update lego
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    case "$ARCH" in
+        x86_64|amd64) ARCH="amd64" ;;
+        aarch64|arm64) ARCH="arm64" ;;
+        armv7l) ARCH="armv7" ;;
+    esac
+    
+    RELEASE_URL=$(curl -s https://api.github.com/repos/go-acme/lego/releases/latest | grep browser_download_url | grep "_${OS}_${ARCH}.tar.gz" | cut -d'"' -f4)
+    curl -sL "$RELEASE_URL" -o /tmp/lego.tar.gz
+    tar -xzf /tmp/lego.tar.gz -C /tmp
+    mv /tmp/lego /home/lego/lego
+    chmod +x /home/lego/lego
+    rm /tmp/lego.tar.gz
+    echo "Lego updated"
+    /home/lego/lego --version
+    ;;
   -v|version)
-    version_output=$(/home/mosdns-x/mosdns version)
-    echo "$version_output"
+    mosdns_version=$(/home/mosdns-x/mosdns version | grep -oP 'version: \K.*')
+    echo "mosdns $mosdns_version"
     ;;
   -h|help|"")
     echo "DNS Management Commands:"
@@ -537,6 +580,7 @@ case "$1" in
     echo "  dns restart  - Restart mosdns service"
     echo "  dns status   - Show service status"
     echo "  dns log      - View mosdns logs"
+    echo "  dns update   - Update mosdns-x and lego"
     echo "  dns -v       - Show mosdns version"
     ;;
   *)
