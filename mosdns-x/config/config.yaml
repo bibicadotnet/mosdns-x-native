@@ -116,8 +116,8 @@ plugins:
   - tag: google_cache
     type: cache
     args:
-      size: 131072
-      compress_resp: true
+      size: 131072 # google_cache
+      compress_resp: false
       cache_everything: true
       lazy_cache_ttl: 86400
       lazy_cache_reply_ttl: 5
@@ -126,8 +126,8 @@ plugins:
   - tag: cdn_direct_cache
     type: cache
     args:
-      size: 131072
-      compress_resp: true
+      size: 131072 # cdn_direct_cache
+      compress_resp: false
       cache_everything: true
       lazy_cache_ttl: 86400
       lazy_cache_reply_ttl: 5
@@ -136,8 +136,8 @@ plugins:
   - tag: cdn_cname_cache
     type: cache
     args:
-      size: 131072
-      compress_resp: true
+      size: 131072 # cdn_cname_cache
+      compress_resp: false
       cache_everything: true
       lazy_cache_ttl: 86400
       lazy_cache_reply_ttl: 5
@@ -146,8 +146,8 @@ plugins:
   - tag: mullvad_cache
     type: cache
     args:
-      size: 1024
-      compress_resp: true
+      size: 1024 # mullvad_cache
+      compress_resp: false
       cache_everything: false
       lazy_cache_ttl: 86400
       lazy_cache_reply_ttl: 5
@@ -156,8 +156,8 @@ plugins:
   - tag: cloudflare_cache
     type: cache
     args:
-      size: 131072
-      compress_resp: true
+      size: 131072 # cloudflare_cache
+      compress_resp: false
       cache_everything: false
       lazy_cache_ttl: 86400
       lazy_cache_reply_ttl: 5
