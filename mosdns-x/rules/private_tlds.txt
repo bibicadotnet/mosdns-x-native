@@ -50,3 +50,6 @@ localhost
 
 # Link-local common
 169.254.1.1
+
+# by_me
+fpt

@@ -14,3 +14,4 @@ umami.is
 controld.com
 tolt.io
 iplocate.io
+vlxx.bz
