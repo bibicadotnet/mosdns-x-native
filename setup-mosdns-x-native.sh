@@ -145,7 +145,7 @@ install_lego() {
 }
 
 install_mosdns() {
-    print_info "Installing mosdns-x..."
+    print_info "Installing MosDNS-X..."
     
     ARCH=$(uname -m)
     case "$ARCH" in
@@ -159,13 +159,13 @@ install_mosdns() {
         | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
     
     if [ -z "$LATEST" ]; then
-        print_error "Failed to get mosdns-x version"
+        print_error "Failed to get MosDNS-X version"
         exit 1
     fi
     
     if ! curl -sL "https://github.com/pmkol/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" \
         -o /tmp/mosdns.zip; then
-        print_error "Failed to download mosdns-x"
+        print_error "Failed to download MosDNS-X"
         exit 1
     fi
     
@@ -175,17 +175,17 @@ install_mosdns() {
     chmod +x /home/mosdns-x/mosdns
     rm /tmp/mosdns.zip
     
-    print_success "Mosdns-x installed to /home/mosdns-x/mosdns"
+    print_success "MosDNS-X installed to /home/mosdns-x/mosdns"
 }
 
 download_mosdns_config() {
-    print_info "Downloading mosdns configuration..."
+    print_info "Downloading MosDNS-X configuration..."
     
     cd /home || exit 1
     
     if ! curl -L https://github.com/bibicadotnet/mosdns-x-native/archive/HEAD.tar.gz 2>/dev/null \
     | tar xz --strip-components=1; then
-        print_error "Unable to download mosdns config"
+        print_error "Unable to download MosDNS-X config"
         exit 1
     fi
     
@@ -194,7 +194,7 @@ download_mosdns_config() {
     
     mkdir -p /home/mosdns-x/log
     
-    print_success "Mosdns configuration downloaded"
+    print_success "MosDNS-X configuration downloaded"
 }
 
 obtain_or_renew_certificate() {
@@ -303,7 +303,7 @@ obtain_or_renew_certificate() {
 update_mosdns_config() {
     local domain=$1
     
-    print_info "Updating mosdns configuration..."
+    print_info "Updating MosDNS-X configuration..."
     
     sed -i "s/dns\.bibica\.net/$domain/g" /home/mosdns-x/config/config.yaml
     
@@ -330,7 +330,7 @@ update_mosdns_config() {
     sed -i "s/size: [0-9]* # cdn_cname_cache/size: $cdn_cname_size # cdn_cname_cache/" /home/mosdns-x/config/config.yaml
     sed -i "s/size: [0-9]* # cloudflare_cache/size: $cloudflare_size # cloudflare_cache/" /home/mosdns-x/config/config.yaml
 
-    print_success "Mosdns configuration updated"
+    print_success "MosDNS-X configuration updated"
 }
 
 create_systemd_service() {
@@ -360,7 +360,7 @@ EOF
         systemctl start mosdns
     fi
     
-    print_success "Mosdns systemd service created and started"
+    print_success "MosDNS-X systemd service created and started"
 }
 
 create_renewal_script() {
@@ -550,10 +550,10 @@ case "$1" in
   status)  exec systemctl status mosdns ;;
   log)     exec tail -f /home/mosdns-x/log/mosdns.log ;;
   update)
-    echo "Updating mosdns-x and lego..."
+    echo "Updating MosDNS-X and Lego..."
     echo ""
     
-    # Update mosdns-x
+    # Update MosDNS-X
     ARCH=$(uname -m)
     case "$ARCH" in
         x86_64|amd64) MOSDNS_ARCH="amd64" ;;
@@ -571,11 +571,11 @@ case "$1" in
     systemctl start mosdns
     
     mosdns_version=$(/home/mosdns-x/mosdns version | grep -oP 'version: \K.*')
-	echo "Mosdns-x updated"
-    echo "mosdns $mosdns_version"
+    echo "MosDNS-X updated successfully"
+    echo "mosdns version $mosdns_version"
     echo ""
     
-    # Update lego
+    # Update Lego
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     case "$ARCH" in
         x86_64|amd64) ARCH="amd64" ;;
@@ -589,22 +589,51 @@ case "$1" in
     mv /tmp/lego /home/lego/lego
     chmod +x /home/lego/lego
     rm /tmp/lego.tar.gz
-    echo "Lego updated"
+    echo "Lego updated successfully"
     /home/lego/lego --version
+    ;;
+  no-ip-log)
+    echo "Installing MosDNS-X (Disable IP logging version)..."
+    echo ""
+    
+    # Detect architecture
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64) MOSDNS_ARCH="amd64" ;;
+        aarch64|arm64) MOSDNS_ARCH="arm64" ;;
+        armv7l) MOSDNS_ARCH="armv7" ;;
+    esac
+    
+    # Get latest release from bibicadotnet repo
+    LATEST=$(curl -s https://api.github.com/repos/bibicadotnet/mosdns-x/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
+    
+    # Download and install
+    curl -sL "https://github.com/bibicadotnet/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" -o /tmp/mosdns-noip.zip
+    unzip -qo /tmp/mosdns-noip.zip mosdns -d /tmp
+    systemctl stop mosdns
+    mv /tmp/mosdns /home/mosdns-x/mosdns
+    chmod +x /home/mosdns-x/mosdns
+    rm /tmp/mosdns-noip.zip
+    systemctl start mosdns
+    
+    mosdns_version=$(/home/mosdns-x/mosdns version | grep -oP 'version: \K.*')
+    echo "MosDNS-X (Disable IP logging version) installed successfully"
+    echo "mosdns version $mosdns_version"
     ;;
   -v|version)
     mosdns_version=$(/home/mosdns-x/mosdns version | grep -oP 'version: \K.*')
-    echo "mosdns $mosdns_version"
+    echo "mosdns version $mosdns_version"
     ;;
   -h|help|"")
-    echo "DNS Management Commands:"
-    echo "  dns start    - Start mosdns service"
-    echo "  dns stop     - Stop mosdns service"
-    echo "  dns restart  - Restart mosdns service"
-    echo "  dns status   - Show service status"
-    echo "  dns log      - View mosdns logs"
-    echo "  dns update   - Update mosdns-x and lego"
-    echo "  dns -v       - Show mosdns version"
+    echo "MosDNS-X Management Commands:"
+    echo "  dns start         - Start MosDNS-X service"
+    echo "  dns stop          - Stop MosDNS-X service"
+    echo "  dns restart       - Restart MosDNS-X service"
+    echo "  dns status        - Show MosDNS-X service status"
+    echo "  dns log           - View MosDNS-X logs"
+    echo "  dns update        - Update MosDNS-X and Lego to latest version"
+    echo "  dns no-ip-log     - Switch to MosDNS-X (Disable IP logging version)"
+    echo "  dns -v            - Show MosDNS-X version"
     ;;
   *)
     echo "Unknown command: $1"
