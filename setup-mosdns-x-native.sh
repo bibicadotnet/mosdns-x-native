@@ -306,6 +306,29 @@ update_mosdns_config() {
     print_info "Updating mosdns configuration..."
     
     sed -i "s/dns\.bibica\.net/$domain/g" /home/mosdns-x/config/config.yaml
+    
+    # Calculate cache sizes based on RAM
+    print_info "Calculating optimal cache sizes based on available RAM..."
+    
+    local total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    local total_ram_mb=$((total_ram_kb / 1024))
+    
+    print_info "Total RAM: ${total_ram_mb} MB"
+    
+    local cache_ram_mb=$(awk "BEGIN {printf \"%.0f\", $total_ram_mb * 0.7}")
+    print_info "RAM allocated for cache (70%): ${cache_ram_mb} MB"
+    
+    local cdn_direct_size=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.2 * 1024}")
+    local cdn_cname_size=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.2 * 1024}")
+    local google_size=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.3 * 1024}")
+    local cloudflare_size=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.3 * 1024 * 2}")
+    
+    print_info "Cache sizes: google=$google_size, cdn_direct=$cdn_direct_size, cdn_cname=$cdn_cname_size, cloudflare=$cloudflare_size"
+    
+    sed -i "s/size: [0-9]* # google_cache/size: $google_size # google_cache/" /home/mosdns-x/config/config.yaml
+    sed -i "s/size: [0-9]* # cdn_direct_cache/size: $cdn_direct_size # cdn_direct_cache/" /home/mosdns-x/config/config.yaml
+    sed -i "s/size: [0-9]* # cdn_cname_cache/size: $cdn_cname_size # cdn_cname_cache/" /home/mosdns-x/config/config.yaml
+    sed -i "s/size: [0-9]* # cloudflare_cache/size: $cloudflare_size # cloudflare_cache/" /home/mosdns-x/config/config.yaml
 
     print_success "Mosdns configuration updated"
 }
@@ -617,11 +640,11 @@ echo "           USAGE INFORMATION"
 echo "=========================================="
 echo ""
 echo "  DNS-over-HTTPS (DoH): https://$DOMAIN/dns-query"
-echo "  DNS-over-HTTP/3 (DoH3): h3://$DOMAIN/dns-query"
 echo "  DNS-over-TLS (DoT): tls://$DOMAIN"
+echo "  DNS-over-HTTP/3 (DoH3): h3://$DOMAIN/dns-query"
 echo "  DNS-over-QUIC (DoQ): quic://$DOMAIN"
 echo ""
-print_info "Use encrypted protocols (DoH/DoT/DoQ) for public access"
+print_warning "Recommended: Use DoH or DoT (safe and stable)"
 echo ""
 echo "=========================================="
 echo "          MANAGEMENT COMMANDS"
