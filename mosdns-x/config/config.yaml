@@ -119,7 +119,7 @@ plugins:
       size: 131072 # google_cache
       compress_resp: false
       cache_everything: true
-      lazy_cache_ttl: 86400
+      lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
 
   # Cache for CDN direct queries (with ECS)
@@ -129,7 +129,7 @@ plugins:
       size: 131072 # cdn_direct_cache
       compress_resp: false
       cache_everything: true
-      lazy_cache_ttl: 86400
+      lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
 
   # Cache for CDN CNAME responses (with ECS)
@@ -139,7 +139,7 @@ plugins:
       size: 131072 # cdn_cname_cache
       compress_resp: false
       cache_everything: true
-      lazy_cache_ttl: 86400
+      lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
 
   # Cache for Mullvad upstream (no ECS)
@@ -149,7 +149,7 @@ plugins:
       size: 1024 # mullvad_cache
       compress_resp: false
       cache_everything: false
-      lazy_cache_ttl: 86400
+      lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
 
   # Cache for Cloudflare upstream (no ECS)
@@ -159,7 +159,7 @@ plugins:
       size: 131072 # cloudflare_cache
       compress_resp: false
       cache_everything: false
-      lazy_cache_ttl: 86400
+      lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
 
   # ----- DNS Redirect/Rewrite -----
@@ -369,3 +369,4 @@ servers:
         addr: "0.0.0.0:853"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
+
