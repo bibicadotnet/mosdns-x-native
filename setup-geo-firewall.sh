@@ -8,7 +8,7 @@ PUBLIC_IP=$(curl -s https://api.ipify.org)
 # USER CONFIGURATION
 # ==============================
 ALLOW_COUNTRIES=("VN")
-ALLOW_TCP_PORTS=("22" "443" "853")
+ALLOW_TCP_PORTS=("22" "2224" "443" "853")
 ALLOW_UDP_PORTS=("443" "853")
 
 # PING Configuration
