@@ -7,7 +7,7 @@
 # LOGGING CONFIGURATION - System Events & Error Tracking
 # ============================================================================
 log:
-  level: error # Options: debug, info, error, warn
+  level: info # Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
@@ -272,7 +272,7 @@ plugins:
 
         # --- Logging ---
         # Generate summary for non-blocked requests
-        #- _query_summary
+        - _query_summary
 
         # --- Route Google Domains ---
         # Forward to Google DNS with ECS support and TTL adjustment (not localhost)
