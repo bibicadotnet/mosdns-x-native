@@ -7,7 +7,7 @@ PUBLIC_IP=$(curl -s https://api.ipify.org)
 # ==============================
 # USER CONFIGURATION
 # ==============================
-ALLOW_COUNTRIES=("VN")
+ALLOW_COUNTRIES=("VN" "HK" "SG" "JP")
 ALLOW_TCP_PORTS=("22" "2224" "443" "853")
 ALLOW_UDP_PORTS=("443" "853")
 
@@ -300,24 +300,35 @@ build_country_ipset() {
     ipset create "$IPSET_COUNTRY" hash:net maxelem 131072
     
     local total=0
-    local sources=(
-        "https://raw.githubusercontent.com/ipverse/rir-ip/refs/heads/master/country/__CC__/ipv4-aggregated.txt"
-        "https://www.ipdeny.com/ipblocks/data/countries/__CC__.zone"
-    )
+	local sources=(
+		"https://raw.githubusercontent.com/ipverse/rir-ip/refs/heads/master/country/__CC__/ipv4-aggregated.txt"
+		"https://www.ipdeny.com/ipblocks/data/countries/__CC__.zone"
+		"https://raw.githubusercontent.com/ebrasha/cidr-ip-ranges-by-country/refs/heads/master/CIDR/__CC__-ipv4-Hackers.Zone.txt"
+	)
     
     for cc in "${ALLOW_COUNTRIES[@]}"; do
         log "Processing country: $cc"
         local cc_lower="${cc,,}"
+        local cc_upper="${cc^^}"
         local temp_file
         temp_file=$(mktemp)
         
-        for source_template in "${sources[@]}"; do
-            local url="${source_template//__CC__/$cc_lower}"
-            if curl -sf --connect-timeout 10 --max-time 30 "$url" 2>/dev/null | \
-               grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' >> "$temp_file"; then
-                log "✓ Fetched from: ${url##*/}"
-            fi
-        done
+		for source_template in "${sources[@]}"; do
+			local url=""
+			
+			if [[ "$source_template" == *"ebrasha"* ]]; then
+				url="${source_template//__CC__/$cc_upper}"
+			else
+				url="${source_template//__CC__/$cc_lower}"
+			fi
+
+			if curl -sf --connect-timeout 10 --max-time 30 "$url" 2>/dev/null | \
+			   grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' >> "$temp_file"; then
+				log "✓ Fetched from: ${url##*/}"
+			else
+				log "✗ Failed: $url"
+			fi
+		done
         
         if [[ -s "$temp_file" ]]; then
             local cc_count=0
