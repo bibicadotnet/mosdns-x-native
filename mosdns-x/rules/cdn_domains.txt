@@ -35,6 +35,7 @@ awsdns.org
 awsdns.co.uk
 azure-dns.com
 microsoft.com
+live.com
 apple.com
 icloud.com
 apple-dns.net
@@ -47,6 +48,8 @@ tiktokcdn-eu.com
 ibyteimg.com
 omniture.com
 1e100.net
+shifen.com
+wshifen.com
 byteoversea.com
 googleusercontent.com
 gcdn.co
@@ -122,6 +125,7 @@ ks-cdn1.com
 ksyuncdn.com
 cloudcsp.com
 qtlcdn.com
+mi.com
 ksyungslb.com
 ksyungslb2.com
 ksyunv5.com
