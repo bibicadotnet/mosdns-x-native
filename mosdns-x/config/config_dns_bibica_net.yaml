@@ -359,23 +359,27 @@ servers:
       # --- DNS-over-TCP (Standard DNS) ---
       - protocol: tcp
         addr: "0.0.0.0:53"
-      
+
       # --- DNS-over-HTTPS (DoH) ---
       - protocol: https
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
-        cert: "/home/lego/certificates/dns.bibica.net.crt"
-        key: "/home/lego/certificates/dns.bibica.net.key"
-        allowed_sni: "dns.bibica.net"
-
-      # --- DNS-over-HTTP/3 (DoH3) ---
-      - protocol: h3
-        addr: "0.0.0.0:443"
-        url_path: "/dns-query"
+        health_path: "/health"
+        redirect_url: "https://bibica.net/thu-nghiem-dns-mien-phi-tu-bibica-net/"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
       
+      # --- DNS-over-HTTP/3 (DoH3) ---
+      - protocol: h3
+        addr: "0.0.0.0:443"
+        url_path: "/dns-query"
+        health_path: "/health"
+        redirect_url: "https://bibica.net/thu-nghiem-dns-mien-phi-tu-bibica-net/"
+        cert: "/home/lego/certificates/dns.bibica.net.crt"
+        key: "/home/lego/certificates/dns.bibica.net.key"
+        allowed_sni: "dns.bibica.net"
+        
       # --- DNS-over-TLS (DoT) ---
       - protocol: tls
         addr: "0.0.0.0:853"
