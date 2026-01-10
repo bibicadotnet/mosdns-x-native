@@ -7,7 +7,7 @@
 # LOGGING CONFIGURATION - System Events & Error Tracking
 # ============================================================================
 log:
-  level: info # Options: debug, info, error, warn
+  level: error # Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
@@ -181,12 +181,14 @@ plugins:
     args:
       upstream:
         - addr: "https://bu0eg1tdzu.cloudflare-gateway.com/dns-query"
+        - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
 
   - tag: upstream_google
     type: fast_forward
     args:
       upstream:
         - addr: "https://8.8.8.8/dns-query"
+        - addr: "https://8.8.4.4/dns-query"
   
   - tag: upstream_mullvad
     type: fast_forward
@@ -199,6 +201,7 @@ plugins:
     args:
       upstream:
         - addr: "https://1.1.1.1/dns-query"
+        - addr: "https://1.0.0.1/dns-query"
 
 # ============================================================================
 # MAIN SEQUENCE - Primary Query Processing Pipeline
@@ -272,7 +275,7 @@ plugins:
 
         # --- Logging ---
         # Generate summary for non-blocked requests
-        - _query_summary
+        #- _query_summary
 
         # --- Route Google Domains ---
         # Forward to Google DNS with ECS support and TTL adjustment (not localhost)
