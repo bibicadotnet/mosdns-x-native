@@ -1,6 +1,6 @@
 # =============================================================================
-# MosDNS-X Configuration for dns.bibica.net
-# Architecture: Clean DNS, ECS CDN, Domain Routing with Memory Cache
+# Mosdns-x PR (Privacy & Resilience) Configuration for dns.bibica.net
+# Architecture: Clean DNS, ECS CDN, Domain Routing with Persistent Redis Cache
 # =============================================================================
 
 # ============================================================================
@@ -42,10 +42,21 @@ data_providers:
     file: "rules/private_tlds.txt"
     auto_reload: true
 
+  - tag: provider_valid_tlds
+    file: "rules/valid_tlds.txt"
+    auto_reload: true
+
 # ============================================================================
 # PLUGINS CONFIGURATION - Functional Modules & Matchers
 # ============================================================================
 plugins:
+  # ----- Response Modifiers -----
+  # Limit response A/AAAA records to max 2 IPs
+  - tag: response_max_2_ips
+    type: limit_ip
+    args:
+      limit: 2
+
   # ----- Query Matchers -----
   # Matcher for localhost clients
   - tag: query_matcher_localhost
@@ -65,6 +76,24 @@ plugins:
     args:
       qtype: [28] # AAAA record
 
+  # ----- Domain Format Validator -----
+  - tag: match_invalid_domain_format
+    type: query_matcher
+    args:
+      domain:
+        # Block domains with illegal characters (space, %, $, #, @, etc.)
+        - "regexp:[^a-zA-Z0-9._-]"
+        
+        # Block single-label domains without a dot (e.g., localhost)
+        - "regexp:^[^.]+$"
+
+  # Check if the domain TLD exists in the IANA official list
+  - tag: match_valid_tld
+    type: query_matcher
+    args:
+      domain:
+        - "provider:provider_valid_tlds"
+
   # ----- ECS Handler -----
   - tag: ecs_handler
     type: ecs
@@ -76,8 +105,8 @@ plugins:
   - tag: ttl_short
     type: ttl
     args:
-      minimal_ttl: 1
-      maximum_ttl: 1
+      minimal_ttl: 60
+      maximum_ttl: 300
 
   # ----- Domain Matchers -----
   - tag: match_cdn_domain
@@ -174,12 +203,14 @@ plugins:
     args:
       upstream:
         - addr: "https://bu0eg1tdzu.cloudflare-gateway.com/dns-query"
-  
+        - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
+
   - tag: upstream_google
     type: fast_forward
     args:
       upstream:
         - addr: "https://8.8.8.8/dns-query"
+        - addr: "https://8.8.4.4/dns-query"
   
   - tag: upstream_mullvad
     type: fast_forward
@@ -192,6 +223,7 @@ plugins:
     args:
       upstream:
         - addr: "https://1.1.1.1/dns-query"
+        - addr: "https://1.0.0.1/dns-query"
 
 # ============================================================================
 # MAIN SEQUENCE - Primary Query Processing Pipeline
@@ -206,6 +238,13 @@ plugins:
         # --- Reject ANY Queries (RFC 8482) ---
         # ANY queries are deprecated and often used in DNS amplification attacks
         - _reject_any
+
+        # --- Block Invalid Domain Format ---
+        # Return NXDOMAIN immediately for malformed or garbage domains
+        - if: "match_invalid_domain_format || !match_valid_tld"
+          exec:
+            - _new_nxdomain_response
+            - _return
 
         # --- Block IPv6 Queries (AAAA) ---
         # Prefer IPv4 by returning empty responses for IPv6 lookups
@@ -274,6 +313,7 @@ plugins:
             - ecs_handler
             - google_cache
             - upstream_google
+            - response_max_2_ips
             - ttl_short
             - _return
         
@@ -282,6 +322,7 @@ plugins:
           exec:
             - google_cache
             - upstream_google
+            - response_max_2_ips
             - ttl_short
             - _return
 
@@ -292,6 +333,7 @@ plugins:
             - ecs_handler
             - cdn_direct_cache
             - upstream_cloudflare_gateway
+            - response_max_2_ips
             - ttl_short
             - _return
 
@@ -301,6 +343,7 @@ plugins:
           exec:
             - mullvad_cache
             - upstream_mullvad
+            - response_max_2_ips
             - ttl_short
             - _return
 
@@ -311,6 +354,7 @@ plugins:
         # --- Default Upstream ---
         # Use standard Cloudflare DNS for all other queries
         - upstream_cloudflare
+        - response_max_2_ips
         
         # --- TTL Override ---
         # Force short TTL for client-side caching control
@@ -327,6 +371,7 @@ plugins:
             - ecs_handler
             - cdn_cname_cache
             - upstream_cloudflare_gateway
+            - response_max_2_ips
             - ttl_short
             - _return
 
@@ -343,29 +388,37 @@ servers:
       # --- DNS-over-TCP (Standard DNS) ---
       - protocol: tcp
         addr: "0.0.0.0:53"
-      
+
       # --- DNS-over-HTTPS (DoH) ---
       - protocol: https
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
-        cert: "/home/lego/certificates/dns.bibica.net.crt"
-        key: "/home/lego/certificates/dns.bibica.net.key"
+        health_path: "/health"
+        redirect_url: "https://bibica.net/thu-nghiem-dns-mien-phi-tu-bibica-net/"
+        cert: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/fullchain.pem"
+        key: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/privkey.pem"
+        allowed_sni: "dns.bibica.net"
       
       # --- DNS-over-HTTP/3 (DoH3) ---
       - protocol: h3
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
-        cert: "/home/lego/certificates/dns.bibica.net.crt"
-        key: "/home/lego/certificates/dns.bibica.net.key"
-      
+        health_path: "/health"
+        redirect_url: "https://bibica.net/thu-nghiem-dns-mien-phi-tu-bibica-net/"
+        cert: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/fullchain.pem"
+        key: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/privkey.pem"
+        allowed_sni: "dns.bibica.net"
+        
       # --- DNS-over-TLS (DoT) ---
       - protocol: tls
         addr: "0.0.0.0:853"
-        cert: "/home/lego/certificates/dns.bibica.net.crt"
-        key: "/home/lego/certificates/dns.bibica.net.key"
+        cert: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/fullchain.pem"
+        key: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/privkey.pem"
+        allowed_sni: "dns.bibica.net"
 
       # --- DNS-over-QUIC (DoQ) ---
       - protocol: quic
         addr: "0.0.0.0:853"
-        cert: "/home/lego/certificates/dns.bibica.net.crt"
-        key: "/home/lego/certificates/dns.bibica.net.key"
+        cert: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/fullchain.pem"
+        key: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/privkey.pem"
+        allowed_sni: "dns.bibica.net"
