@@ -15,13 +15,15 @@ cat > "$SCRIPT_FILE" << 'EOF'
 #!/bin/bash
 BLOCK_OUT="/home/mosdns-x/rules/blocklists.txt"
 ALLOW_OUT="/home/mosdns-x/rules/allowlists.txt"
+TLD_OUT="/home/mosdns-x/rules/valid_tlds.txt"
 BLOCK_TMP="/tmp/blocklists.tmp"
 ALLOW_TMP="/tmp/allowlists.tmp"
+TLD_TMP="/tmp/valid_tlds.tmp"
 
 mkdir -p /home/mosdns-x/rules
 
 # Clean up temporary files on exit
-trap "rm -f $BLOCK_TMP $ALLOW_TMP; exit" INT TERM EXIT
+trap "rm -f $BLOCK_TMP $ALLOW_TMP $TLD_TMP; exit" INT TERM EXIT
 
 # Set low priority for CPU and I/O
 renice -n 19 -p $$ 2>/dev/null
@@ -58,11 +60,15 @@ curl -fsSL --compressed --max-time 30 \
 https://raw.githubusercontent.com/bibicadotnet/AdGuard-Home-blocklists/refs/heads/main/whitelist.txt \
 | extract_domains > "$ALLOW_TMP" &
 
+# Download IANA TLDs list
+curl -fsSL --max-time 30 https://data.iana.org/TLD/tlds-alpha-by-domain.txt | grep -v '^#' | tr '[:upper:]' '[:lower:]' > "$TLD_TMP" &
+
 wait
 
 # Replace existing files if download was successful (non-empty)
 [ -s "$BLOCK_TMP" ] && mv -f "$BLOCK_TMP" "$BLOCK_OUT"
 [ -s "$ALLOW_TMP" ] && mv -f "$ALLOW_TMP" "$ALLOW_OUT"
+[ -s "$TLD_TMP" ] && mv -f "$TLD_TMP" "$TLD_OUT"
 EOF
 
 # Still keeping chmod for manual execution convenience
