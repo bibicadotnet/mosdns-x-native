@@ -126,6 +126,7 @@ ksyuncdn.com
 cloudcsp.com
 qtlcdn.com
 mi.com
+mgslb.com
 ksyungslb.com
 ksyungslb2.com
 ksyunv5.com

@@ -39,3 +39,4 @@ v3-dy-o.zjcdn.com v3-dy-o.zjcdn.com.queniusy.com
 
 # Shopee
 deo.shopeemobile.com deo.shopeemobile.com-v1.edgesuite.net
+cf.shopee.vn cf.shopee.vn.akamaized.net
