@@ -395,8 +395,8 @@ servers:
         url_path: "/dns-query"
         health_path: "/health"
         redirect_url: "https://bibica.net/thu-nghiem-dns-mien-phi-tu-bibica-net/"
-        cert: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/fullchain.pem"
-        key: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/privkey.pem"
+        cert: "/home/lego/certificates/dns.bibica.net.crt"
+        key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
       
       # --- DNS-over-HTTP/3 (DoH3) ---
@@ -405,21 +405,20 @@ servers:
         url_path: "/dns-query"
         health_path: "/health"
         redirect_url: "https://bibica.net/thu-nghiem-dns-mien-phi-tu-bibica-net/"
-        cert: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/fullchain.pem"
-        key: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/privkey.pem"
+        cert: "/home/lego/certificates/dns.bibica.net.crt"
+        key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
         
       # --- DNS-over-TLS (DoT) ---
       - protocol: tls
         addr: "0.0.0.0:853"
-        cert: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/fullchain.pem"
-        key: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/privkey.pem"
+        cert: "/home/lego/certificates/dns.bibica.net.crt"
+        key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
 
       # --- DNS-over-QUIC (DoQ) ---
       - protocol: quic
         addr: "0.0.0.0:853"
-        cert: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/fullchain.pem"
-        key: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/privkey.pem"
+        cert: "/home/lego/certificates/dns.bibica.net.crt"
+        key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
-
