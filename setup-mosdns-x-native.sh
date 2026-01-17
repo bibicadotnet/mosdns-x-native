@@ -155,15 +155,15 @@ install_mosdns() {
         *) print_error "Unsupported architecture: $ARCH"; exit 1 ;;
     esac
     
-    LATEST=$(curl -s https://api.github.com/repos/pmkol/mosdns-x/releases/latest \
-        | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
+	LATEST=$(curl -s https://api.github.com/repos/bibicadotnet/mosdns-x/releases/latest \
+		| sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
     
     if [ -z "$LATEST" ]; then
         print_error "Failed to get MosDNS-X version"
         exit 1
     fi
     
-    if ! curl -sL "https://github.com/pmkol/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" \
+    if ! curl -sL "https://github.com/bibicadotnet/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" \
         -o /tmp/mosdns.zip; then
         print_error "Failed to download MosDNS-X"
         exit 1
@@ -561,8 +561,8 @@ case "$1" in
         armv7l) MOSDNS_ARCH="armv7" ;;
     esac
     
-    LATEST=$(curl -s https://api.github.com/repos/pmkol/mosdns-x/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
-    curl -sL "https://github.com/pmkol/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" -o /tmp/mosdns.zip
+	LATEST=$(curl -s https://api.github.com/repos/bibicadotnet/mosdns-x/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
+	curl -sL "https://github.com/bibicadotnet/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" -o /tmp/mosdns.zip
     unzip -qo /tmp/mosdns.zip mosdns -d /tmp
     systemctl stop mosdns
     mv /tmp/mosdns /home/mosdns-x/mosdns
@@ -592,34 +592,6 @@ case "$1" in
     echo "Lego updated successfully"
     /home/lego/lego --version
     ;;
-  no-ip-log)
-    echo "Installing MosDNS-X (Disable IP logging version)..."
-    echo ""
-    
-    # Detect architecture
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64|amd64) MOSDNS_ARCH="amd64" ;;
-        aarch64|arm64) MOSDNS_ARCH="arm64" ;;
-        armv7l) MOSDNS_ARCH="armv7" ;;
-    esac
-    
-    # Get latest release from bibicadotnet repo
-    LATEST=$(curl -s https://api.github.com/repos/bibicadotnet/mosdns-x/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
-    
-    # Download and install
-    curl -sL "https://github.com/bibicadotnet/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" -o /tmp/mosdns-noip.zip
-    unzip -qo /tmp/mosdns-noip.zip mosdns -d /tmp
-    systemctl stop mosdns
-    mv /tmp/mosdns /home/mosdns-x/mosdns
-    chmod +x /home/mosdns-x/mosdns
-    rm /tmp/mosdns-noip.zip
-    systemctl start mosdns
-    
-    mosdns_version=$(/home/mosdns-x/mosdns version | grep -oP 'version: \K.*')
-    echo "MosDNS-X (Disable IP logging version) installed successfully"
-    echo "mosdns version $mosdns_version"
-    ;;
   -v|version)
     mosdns_version=$(/home/mosdns-x/mosdns version | grep -oP 'version: \K.*')
     echo "mosdns version $mosdns_version"
@@ -632,7 +604,6 @@ case "$1" in
     echo "  dns status        - Show MosDNS-X service status"
     echo "  dns log           - View MosDNS-X logs"
     echo "  dns update        - Update MosDNS-X and Lego to latest version"
-    echo "  dns no-ip-log     - Switch to MosDNS-X (Disable IP logging version)"
     echo "  dns -v            - Show MosDNS-X version"
     ;;
   *)
