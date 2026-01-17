@@ -1,6 +1,6 @@
 # =============================================================================
 # Mosdns-x PR (Privacy & Resilience) Configuration for dns.bibica.net
-# Architecture: Clean DNS, ECS CDN, Domain Routing with Persistent Redis Cache
+# Architecture: Clean DNS, ECS CDN, Domain Routing with Memory Cache
 # =============================================================================
 
 # ============================================================================
@@ -422,3 +422,4 @@ servers:
         cert: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/fullchain.pem"
         key: "/home/mosdns-x/ssl/letsencrypt/live/dns.bibica.net/privkey.pem"
         allowed_sni: "dns.bibica.net"
+
