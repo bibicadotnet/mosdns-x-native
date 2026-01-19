@@ -145,7 +145,7 @@ plugins:
   - tag: google_cache
     type: cache
     args:
-      size: 131072 # google_cache
+      size: 424550 # google_cache
       compress_resp: false
       cache_everything: true
       lazy_cache_ttl: 259200
@@ -155,7 +155,7 @@ plugins:
   - tag: cdn_direct_cache
     type: cache
     args:
-      size: 131072 # cdn_direct_cache
+      size: 283034 # cdn_direct_cache
       compress_resp: false
       cache_everything: true
       lazy_cache_ttl: 259200
@@ -165,7 +165,7 @@ plugins:
   - tag: cdn_cname_cache
     type: cache
     args:
-      size: 131072 # cdn_cname_cache
+      size: 283034 # cdn_cname_cache
       compress_resp: false
       cache_everything: true
       lazy_cache_ttl: 259200
@@ -185,7 +185,7 @@ plugins:
   - tag: cloudflare_cache
     type: cache
     args:
-      size: 131072 # cloudflare_cache
+      size: 849101 # cloudflare_cache
       compress_resp: false
       cache_everything: false
       lazy_cache_ttl: 259200
@@ -394,7 +394,7 @@ servers:
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
         health_path: "/health"
-        redirect_url: "https://bibica.net/thu-nghiem-dns-mien-phi-tu-bibica-net/"
+        redirect_url: "https://bibica.net/dns-mien-phi-tu-dns-bibica-net/"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
@@ -404,7 +404,7 @@ servers:
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
         health_path: "/health"
-        redirect_url: "https://bibica.net/thu-nghiem-dns-mien-phi-tu-bibica-net/"
+        redirect_url: "https://bibica.net/dns-mien-phi-tu-dns-bibica-net/"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
