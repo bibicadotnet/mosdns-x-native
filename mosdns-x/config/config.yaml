@@ -315,6 +315,7 @@ plugins:
             - upstream_google
             - response_max_2_ips
             - ttl_short
+            - _no_cname
             - _return
         
         # Route Google Domains without ECS (localhost only)
@@ -324,6 +325,7 @@ plugins:
             - upstream_google
             - response_max_2_ips
             - ttl_short
+            - _no_cname
             - _return
 
         # --- Route CDN Domains ---
@@ -335,6 +337,7 @@ plugins:
             - upstream_cloudflare_gateway
             - response_max_2_ips
             - ttl_short
+            - _no_cname
             - _return
 
         # --- Route Mullvad Domains ---
@@ -345,6 +348,7 @@ plugins:
             - upstream_mullvad
             - response_max_2_ips
             - ttl_short
+            - _no_cname
             - _return
 
         # --- Memory Cache Lookup ---
@@ -359,6 +363,7 @@ plugins:
         # --- TTL Override ---
         # Force short TTL for client-side caching control
         - ttl_short
+        - _no_cname
 
         # ======================================================================
         # PHASE 5: Post-Processing (Recursive CNAME Resolution)
@@ -373,6 +378,7 @@ plugins:
             - upstream_cloudflare_gateway
             - response_max_2_ips
             - ttl_short
+            - _no_cname 
             - _return
 
 # ============================================================================
