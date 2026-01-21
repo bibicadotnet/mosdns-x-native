@@ -113,22 +113,27 @@ plugins:
     type: query_matcher
     args:
       domain: ["provider:cdn_domains"]
+
   - tag: match_google_domain
     type: query_matcher
     args:
       domain: ["provider:google_domains"]
+
   - tag: match_mullvad_domain
     type: query_matcher
     args:
       domain: ["provider:mullvad_domains"]
+
   - tag: match_allowlisted
     type: query_matcher
     args:
       domain: ["provider:allowlist_domains"]
+
   - tag: match_blocklisted
     type: query_matcher
     args:
       domain: ["provider:blocklist_domains"]
+
   - tag: match_domain_private_tld
     type: query_matcher
     args:
