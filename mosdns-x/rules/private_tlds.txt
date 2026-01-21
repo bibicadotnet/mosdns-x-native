@@ -220,3 +220,16 @@ full:mn.kbnn.vn
 full:polyfill.io
 full:_https._tcp.enterprise.proxmox.com
 full:cdn-mnweb.miniworldgame.com
+full:newsfeed.intl.miui.com
+full:wpad.mshome.net
+full:router.totolink.com
+full:wpad.router.totolink.com
+full:_ldap._tcp.dc._msdcs.router.totolink.com
+full:_ldap._tcp.dc._msdcs.WORKGROUP.router.totolink.com
+full:kr-col-tcp.nelo.navercorp.com
+full:usa.ime.cootek.com.mshome.net
+full:_24220._https.zagent2668.kbz0pwvxmv.com
+full:_24220._https.zagent2825.kbz0pwvxmv.com
+full:_24220._https.zagent2694.kbz0pwvxmv.com
+full:ww.yoodoo.app
+full:_4431._https.www.livedoomovies.com
