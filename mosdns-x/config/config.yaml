@@ -76,6 +76,11 @@ plugins:
     args:
       qtype: [28] # AAAA record
 
+  - tag: query_is_https
+    type: query_matcher
+    args:
+      qtype: [65] # HTTPS record
+    
   # ----- Domain Format Validator -----
   - tag: match_invalid_domain_format
     type: query_matcher
@@ -265,6 +270,12 @@ plugins:
             - _new_notimp_response
             - _return
 
+        # --- Block HTTPS Record Queries ---
+        - if: query_is_https
+          exec:
+            - _new_notimp_response
+            - _return
+    
         # --- Block Private-Use Domains (RFC 6761) ---
         # Return NXDOMAIN for private TLDs and local-use names
         - if: match_domain_private_tld
@@ -309,7 +320,7 @@ plugins:
 
         # --- Logging ---
         # Generate summary for non-blocked requests
-        #- _query_summary
+        - _query_summary
 
         # --- Route Google Domains ---
         # Forward to Google DNS with ECS support and TTL adjustment (not localhost)
