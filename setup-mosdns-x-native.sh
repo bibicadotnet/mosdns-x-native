@@ -463,6 +463,8 @@ EOF
 fix_permissions() {
     print_info "Fixing permissions..."
     chmod +x /home/*.sh 2>/dev/null
+    chmod +x /home/mosdns-x/mosdns 2>/dev/null
+    chmod +x /home/lego/lego 2>/dev/null
     chmod 600 "$TOKEN_FILE" 2>/dev/null
     chmod 600 "$DOMAIN_FILE" 2>/dev/null
     print_success "Permissions fixed"
@@ -500,10 +502,10 @@ restore_from_backup() {
     
     # Recreate services
     update_mosdns_config "$DOMAIN"
+    fix_permissions
     create_systemd_service
     create_renewal_script "$DOMAIN"
     create_dns_command
-    fix_permissions
     setup_cron_jobs
     
     echo ""
@@ -648,10 +650,10 @@ fresh_install() {
 
     # Configure
     update_mosdns_config "$DOMAIN"
+    fix_permissions
     create_systemd_service
     create_renewal_script "$DOMAIN"
     create_dns_command
-    fix_permissions
     setup_cron_jobs
 
     SERVER_IP=$(curl -s https://api.ipify.org)
