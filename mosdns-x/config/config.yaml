@@ -80,17 +80,33 @@ plugins:
     type: query_matcher
     args:
       qtype: [65] # HTTPS record
-    
-  # ----- Domain Format Validator -----
+
+  # ----- Domain Format Validator (regex-based, mosdns-x safe) -----
   - tag: match_invalid_domain_format
     type: query_matcher
     args:
       domain:
-        # Block domains with illegal characters (space, %, $, #, @, etc.)
-        - "regexp:[^a-zA-Z0-9._-]"
-        
-        # Block single-label domains without a dot (e.g., localhost)
-        - "regexp:^[^.]+$"
+        # 1. Illegal characters (only LDH + dot)
+        - 'regexp:[^a-zA-Z0-9._-]'
+
+        # 2. No dot (single-label domains like localhost)
+        - 'regexp:^[^.]+$'
+
+        # 3. Total domain length > 253
+        - 'regexp:^.{254,}$'
+
+        # 4. Label length > 63 (start / middle / end labels)
+        - 'regexp:^[^.]{64,}\.'
+        - 'regexp:\.[^.]{64,}\.'
+        - 'regexp:\.[^.]{64,}$'
+
+        # 5. Label starts with hyphen
+        - 'regexp:^-[^.]+'
+        - 'regexp:\.-[^.]+'
+
+        # 6. Label ends with hyphen
+        - 'regexp:[^.]+-$'
+        - 'regexp:[^.]+-\.'
 
   # Check if the domain TLD exists in the IANA official list
   - tag: match_valid_tld
