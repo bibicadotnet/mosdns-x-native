@@ -302,3 +302,5 @@ imgix.net
 qpic.cn
 zdnstatic.com
 alikunlun.net
+btc620.com
+vedcdnlb.com
