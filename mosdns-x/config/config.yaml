@@ -243,11 +243,13 @@ plugins:
     args:
       upstream:
         - addr: "https://dns.mullvad.net/dns-query"
-  
+        - addr: "https://adblock.dns.mullvad.net/dns-query"
+
   - tag: upstream_cloudflare
     type: fast_forward
     args:
       upstream:
+        - addr: "https://cloudflare-dns.com/dns-query"
         - addr: "https://1.1.1.1/dns-query"
         - addr: "https://1.0.0.1/dns-query"
 
@@ -460,3 +462,4 @@ servers:
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
+
