@@ -7,7 +7,7 @@
 # LOGGING CONFIGURATION - System Events & Error Tracking
 # ============================================================================
 log:
-  level: error # Options: debug, info, error, warn
+  level: info # Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
@@ -229,25 +229,35 @@ plugins:
     args:
       upstream:
         - addr: "https://bu0eg1tdzu.cloudflare-gateway.com/dns-query"
+        - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
+        - addr: "tls://bu0eg1tdzu.cloudflare-gateway.com"
+        - addr: "tls://rhpcv957tj.cloudflare-gateway.com"
 
   - tag: upstream_google
     type: fast_forward
     args:
       upstream:
-        - addr: "https://dns.google/dns-query"
-
+        - addr: "https://8.8.8.8/dns-query"
+        - addr: "https://8.8.4.4/dns-query"
+        - addr: "tls://8.8.8.8"
+        - addr: "tls://8.8.4.4"
+  
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
         - addr: "https://dns.mullvad.net/dns-query"
-
+        - addr: "tls://dns.mullvad.net"
+  
   - tag: upstream_cloudflare
     type: fast_forward
     args:
       upstream:
-        - addr: "https://cloudflare-dns.com/dns-query"
-
+        - addr: "https://1.1.1.1/dns-query"
+        - addr: "https://1.0.0.1/dns-query"
+        - addr: "tls://1.1.1.1"
+        - addr: "tls://1.0.0.1"
+        
 # ============================================================================
 # MAIN SEQUENCE - Primary Query Processing Pipeline
 # ============================================================================
@@ -333,7 +343,7 @@ plugins:
 
         # --- Logging ---
         # Generate summary for non-blocked requests
-        #- _query_summary
+        - _query_summary
 
         # --- Route Google Domains ---
         # Forward to Google DNS with ECS support and TTL adjustment (not localhost)
