@@ -229,29 +229,24 @@ plugins:
     args:
       upstream:
         - addr: "https://bu0eg1tdzu.cloudflare-gateway.com/dns-query"
-        - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
 
   - tag: upstream_google
     type: fast_forward
     args:
       upstream:
-        - addr: "https://8.8.8.8/dns-query"
-        - addr: "https://8.8.4.4/dns-query"
-  
+        - addr: "https://dns.google/dns-query"
+
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
         - addr: "https://dns.mullvad.net/dns-query"
-        - addr: "https://adblock.dns.mullvad.net/dns-query"
 
   - tag: upstream_cloudflare
     type: fast_forward
     args:
       upstream:
         - addr: "https://cloudflare-dns.com/dns-query"
-        - addr: "https://1.1.1.1/dns-query"
-        - addr: "https://1.0.0.1/dns-query"
 
 # ============================================================================
 # MAIN SEQUENCE - Primary Query Processing Pipeline
@@ -462,4 +457,3 @@ servers:
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
-
