@@ -50,3 +50,6 @@ localhost
 
 # Link-local common
 169.254.1.1
+
+#RCODE 2 (SERVFAIL)
+full:odds.luongson.app

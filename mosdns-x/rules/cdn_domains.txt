@@ -23,6 +23,7 @@ dnsv5.com
 dnse3.com
 ovscdns.com
 cdnhwcchh18.com
+lazcdn.com
 slatic.net
 cdnhwcick110.com
 workers.dev
@@ -44,7 +45,6 @@ cdn-apple.com
 adobe.net
 awsdns-12.co.uk
 awsdns-03.com
-tiktokcdn-eu.com
 ibyteimg.com
 omniture.com
 1e100.net
@@ -245,6 +245,10 @@ bytecdn.cn
 pstatp.com
 ibytedtos.com
 tiktokcdn.com
+tiktokrow-cdn.com
+tiktokcdn-eu.com
+tiktokcdn-us.com
+tiktokv.com
 netlifyglobalcdn.com
 netlify.app
 vercel-cdn.com
@@ -304,3 +308,4 @@ zdnstatic.com
 alikunlun.net
 btc620.com
 vedcdnlb.com
+tbcache.com
