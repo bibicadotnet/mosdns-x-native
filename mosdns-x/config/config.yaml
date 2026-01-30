@@ -287,11 +287,12 @@ plugins:
             - _return
 
         # --- Block HTTPS Record Queries ---
+        # HTTPS (65) discovery is redundant for fixed DoH/DoH3/DoQ endpoints.
         - if: query_is_https
           exec:
             - _new_notimp_response
             - _return
-    
+
         # --- Block Private-Use Domains (RFC 6761) ---
         # Return NXDOMAIN for private TLDs and local-use names
         - if: match_domain_private_tld
@@ -344,6 +345,7 @@ plugins:
           exec:
             - ecs_handler
             - google_cache
+            - _retry_servfail
             - upstream_google
             - response_max_2_ips
             - ttl_short
@@ -354,6 +356,7 @@ plugins:
         - if: match_google_domain
           exec:
             - google_cache
+            - _retry_servfail
             - upstream_google
             - response_max_2_ips
             - ttl_short
@@ -366,6 +369,7 @@ plugins:
           exec:
             - ecs_handler
             - cdn_direct_cache
+            - _retry_servfail
             - upstream_cloudflare_gateway
             - response_max_2_ips
             - ttl_short
@@ -377,6 +381,7 @@ plugins:
         - if: match_mullvad_domain
           exec:
             - mullvad_cache
+            - _retry_servfail
             - upstream_mullvad
             - response_max_2_ips
             - ttl_short
@@ -389,6 +394,7 @@ plugins:
 
         # --- Default Upstream ---
         # Use standard Cloudflare DNS for all other queries
+        - _retry_servfail
         - upstream_cloudflare
         - response_max_2_ips
         
@@ -407,7 +413,8 @@ plugins:
           exec:
             - ecs_handler
             - cdn_cname_cache
-            - upstream_cloudflare_gateway
+            - _retry_servfail
+            - upstream_cloudflare_gateway   
             - response_max_2_ips
             - ttl_short
             - _no_cname 
