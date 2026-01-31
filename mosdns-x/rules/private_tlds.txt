@@ -1,55 +1,13 @@
-# RFC 6761 - Special-Use Domain Names
-local
-localhost
-test
-invalid
-example
-example.com
-example.net
-example.org
-
-# RFC 9476 - .alt TLD for non-DNS names
-alt
-
-# RFC 8375 - Home Networking Control Protocol
+! RCODE 3 (NXDOMAIN)
+tendawifi.com
+mshome.net
 home.arpa
+version.bind
+id.server
+hostname.bind
+authors.bind
 
-# RFC 7686 - Tor Onion Services
-onion
+! RCODE 2 (SERVFAIL)
+odds.luongson.app
 
-# Common router defaults (non-RFC, best practice)
-lan
-home
-localdomain
-internal
-router
-gateway
-modem
-
-# DNS Meta Queries
-full:version.bind
-full:id.server
-full:hostname.bind
-full:authors.bind
-
-# Common router gateways
-192.168.0.1
-192.168.1.1
-192.168.2.1
-192.168.0.254
-192.168.1.254
-10.0.0.1
-10.0.1.1
-10.1.1.1
-172.16.0.1
-172.31.0.1
-127.0.0.1
-
-# Loopback
-localhost
-
-# Link-local common
-169.254.1.1
-
-#RCODE 2 (SERVFAIL)
-full:odds.luongson.app
+#RCODE 2 (SERVFAIL) RCODE 3 (NXDOMAIN)
