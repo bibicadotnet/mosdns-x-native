@@ -7,7 +7,7 @@
 # LOGGING CONFIGURATION - System Events & Error Tracking
 # ============================================================================
 log:
-  level: error # Options: debug, info, error, warn
+  level: info # Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
@@ -229,27 +229,34 @@ plugins:
     args:
       upstream:
         - addr: "https://bu0eg1tdzu.cloudflare-gateway.com/dns-query"
+          dial_addr: "162.159.36.5"
         - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
+          dial_addr: "162.159.36.20"
 
   - tag: upstream_google
     type: fast_forward
     args:
       upstream:
         - addr: "https://8.8.8.8/dns-query"
+          dial_addr: "8.8.8.8"
         - addr: "https://8.8.4.4/dns-query"
-  
+          dial_addr: "8.8.4.4"
+
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
         - addr: "https://dns.mullvad.net/dns-query"
-  
+          dial_addr: "194.242.2.2"
+
   - tag: upstream_cloudflare
     type: fast_forward
     args:
       upstream:
-        - addr: "https://1.1.1.1/dns-query"
         - addr: "https://1.0.0.1/dns-query"
+          dial_addr: "1.0.0.1"
+        - addr: "https://1.1.1.1/dns-query"
+          dial_addr: "1.1.1.1"
 
 # ============================================================================
 # MAIN SEQUENCE - Primary Query Processing Pipeline
@@ -272,22 +279,22 @@ plugins:
             - _new_nxdomain_response
             - _return
 
-        # --- Block IPv6 Queries (AAAA) ---
+        # --- Block IPv6 Queries AAAA (28) ---
         # Prefer IPv4 by returning empty responses for IPv6 lookups
         - if: query_is_ipv6
           exec:
             - _new_empty_response
             - _return
 
-        # --- Block PTR Queries ---
+        # --- Block PTR Queries (12) ---
         # Return NOTIMP (Not Implemented) for reverse DNS lookups
         - if: query_is_ptr
           exec:
             - _new_notimp_response
             - _return
 
-        # --- Block HTTPS Record Queries ---
-        # HTTPS (65) discovery is redundant for fixed DoH/DoH3/DoQ endpoints.
+        # --- Block HTTPS Record Queries (65) ---
+        # HTTPS discovery is redundant for fixed DoH/DoH3/DoQ endpoints.
         - if: query_is_https
           exec:
             - _new_notimp_response
@@ -337,7 +344,7 @@ plugins:
 
         # --- Logging ---
         # Generate summary for non-blocked requests
-        #- _query_summary
+        - _query_summary
 
         # --- Route Google Domains ---
         # Forward to Google DNS with ECS support and TTL adjustment (not localhost)
