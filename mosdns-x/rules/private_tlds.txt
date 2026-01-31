@@ -1,4 +1,4 @@
-! RCODE 3 (NXDOMAIN)
+# RCODE 3 (NXDOMAIN)
 tendawifi.com
 mshome.net
 home.arpa
@@ -7,7 +7,7 @@ id.server
 hostname.bind
 authors.bind
 
-! RCODE 2 (SERVFAIL)
+# RCODE 2 (SERVFAIL)
 odds.luongson.app
 
-#RCODE 2 (SERVFAIL) RCODE 3 (NXDOMAIN)
+# RCODE 2 (SERVFAIL) RCODE 3 (NXDOMAIN)
