@@ -9,3 +9,4 @@ githubassets.com
 steamcommunity.com
 steampowered.com
 steamstatic.com
+surfshark.com

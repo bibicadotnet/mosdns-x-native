@@ -7,7 +7,7 @@
 # LOGGING CONFIGURATION - System Events & Error Tracking
 # ============================================================================
 log:
-  level: info # Options: debug, info, error, warn
+  level: error # Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
@@ -228,35 +228,29 @@ plugins:
     type: fast_forward
     args:
       upstream:
-        - addr: "https://bu0eg1tdzu.cloudflare-gateway.com/dns-query"
-          dial_addr: "162.159.36.5"
+        - addr: "tls://bu0eg1tdzu.cloudflare-gateway.com"
         - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
-          dial_addr: "162.159.36.20"
 
   - tag: upstream_google
     type: fast_forward
     args:
       upstream:
-        - addr: "https://8.8.8.8/dns-query"
-          dial_addr: "8.8.8.8"
+        - addr: "tls://8.8.8.8"
         - addr: "https://8.8.4.4/dns-query"
-          dial_addr: "8.8.4.4"
 
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
+        - addr: "tls://dns.mullvad.net"
         - addr: "https://dns.mullvad.net/dns-query"
-          dial_addr: "194.242.2.2"
 
   - tag: upstream_cloudflare
     type: fast_forward
     args:
       upstream:
+        - addr: "tls://1.1.1.1"
         - addr: "https://1.0.0.1/dns-query"
-          dial_addr: "1.0.0.1"
-        - addr: "https://1.1.1.1/dns-query"
-          dial_addr: "1.1.1.1"
 
 # ============================================================================
 # MAIN SEQUENCE - Primary Query Processing Pipeline
@@ -344,7 +338,7 @@ plugins:
 
         # --- Logging ---
         # Generate summary for non-blocked requests
-        - _query_summary
+        #- _query_summary
 
         # --- Route Google Domains ---
         # Forward to Google DNS with ECS support and TTL adjustment (not localhost)
@@ -352,7 +346,6 @@ plugins:
           exec:
             - ecs_handler
             - google_cache
-            - _retry_servfail
             - upstream_google
             - response_max_2_ips
             - ttl_short
@@ -363,7 +356,6 @@ plugins:
         - if: match_google_domain
           exec:
             - google_cache
-            - _retry_servfail
             - upstream_google
             - response_max_2_ips
             - ttl_short
@@ -376,7 +368,6 @@ plugins:
           exec:
             - ecs_handler
             - cdn_direct_cache
-            - _retry_servfail
             - upstream_cloudflare_gateway
             - response_max_2_ips
             - ttl_short
@@ -388,7 +379,6 @@ plugins:
         - if: match_mullvad_domain
           exec:
             - mullvad_cache
-            - _retry_servfail
             - upstream_mullvad
             - response_max_2_ips
             - ttl_short
@@ -401,7 +391,6 @@ plugins:
 
         # --- Default Upstream ---
         # Use standard Cloudflare DNS for all other queries
-        - _retry_servfail
         - upstream_cloudflare
         - response_max_2_ips
         
@@ -420,7 +409,6 @@ plugins:
           exec:
             - ecs_handler
             - cdn_cname_cache
-            - _retry_servfail
             - upstream_cloudflare_gateway   
             - response_max_2_ips
             - ttl_short

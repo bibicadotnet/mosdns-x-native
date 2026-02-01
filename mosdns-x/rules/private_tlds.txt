@@ -8,6 +8,6 @@ hostname.bind
 authors.bind
 
 # RCODE 2 (SERVFAIL)
-odds.luongson.app
+
 
 # RCODE 2 (SERVFAIL) RCODE 3 (NXDOMAIN)

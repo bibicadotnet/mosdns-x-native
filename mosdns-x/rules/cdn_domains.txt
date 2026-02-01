@@ -51,7 +51,6 @@ omniture.com
 shifen.com
 wshifen.com
 byteoversea.com
-googleusercontent.com
 gcdn.co
 azureedge.net
 azurefd.net
@@ -225,13 +224,7 @@ fastlydns.net
 cloudfronts.net
 amazonaws.com.cn
 amazonaws.com
-googlehosted.com
-gvt1.com
-gvt2.com
-gstatic.com
-googleapis.com
 azurecdn.net
-core.windows.net
 aliyun-cdn.net
 aliyun-oss.com
 tencent-cloud.cn
@@ -258,7 +251,6 @@ bunny.net
 bunnycdn.ru
 keycdn.com
 stackpathdns.com
-existing-origin.stackpathdns.com
 maxcdn.com
 stackpath.com
 gcorelabs.com
@@ -301,7 +293,6 @@ viettelcdn.com
 vinacdn.com
 kdata-cdn.com
 cloudinary.com
-res.cloudinary.com
 imgix.net
 qpic.cn
 zdnstatic.com
@@ -309,3 +300,16 @@ alikunlun.net
 btc620.com
 vedcdnlb.com
 tbcache.com
+tikicdn.com
+vcdn.cloud
+regexp:^static\.
+regexp:^assets\.
+regexp:^cache\.
+regexp:^media\.
+regexp:^images\.
+regexp:^cdn[0-9]*\.
+keyword:cdn
+keyword:edge
+keyword:delivery
+keyword:accelerate
+keyword:mirror

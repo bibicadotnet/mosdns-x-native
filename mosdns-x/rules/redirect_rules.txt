@@ -20,13 +20,12 @@ upos-sz-mirrorcosov.bilivideo.com upos-hz-mirrorakam.akamaized.net
 
 # Medium
 medium.com rocket.net
-www.medium.com rocket.net
 
 # Pornhub
 pornhub.com www.pornhub.com
 
 # Apple
-www.apple.com www.apple.com.edgekey.net
+www.apple.com e6858.dsce9.akamaiedge.net
 
 # Amazon
 www.amazon.com www.amazon.com.edgekey.net
