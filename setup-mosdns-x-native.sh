@@ -373,8 +373,7 @@ if [[ \$DAYS_LEFT -lt \$RENEW_DAYS ]]; then
         renew --preferred-chain="ISRG Root X1"
     
     if [[ \$? -eq 0 ]]; then
-        systemctl reload mosdns 2>/dev/null || systemctl restart mosdns
-        echo "Certificate renewed!"
+        echo "Certificate renewed! Mosdns-x will hot-reload automatically."
     else
         echo "Renewal failed!"
         exit 1
