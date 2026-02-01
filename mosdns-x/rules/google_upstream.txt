@@ -38,3 +38,4 @@ instagram.com
 cdninstagram.com
 nflxvideo.net
 windows.com
+keyword:google
