@@ -323,12 +323,20 @@ build_country_ipset() {
 			fi
 
 			if curl -sf --connect-timeout 10 --max-time 30 "$url" 2>/dev/null | \
-			   grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' >> "$temp_file"; then
+			   grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' >> "$temp_file"; then
 				log "✓ Fetched from: ${url##*/}"
 			else
 				log "✗ Failed: $url"
 			fi
 		done
+
+		if [[ "$cc_upper" == "VN" ]]; then
+			local vn_url="https://raw.githubusercontent.com/bibicadotnet/IPinfo-VietNam/main/vietnam.txt"
+			if curl -sf --connect-timeout 10 --max-time 30 "$vn_url" 2>/dev/null | \
+			   grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' >> "$temp_file"; then
+				log "✓ Fetched from: vietnam.txt"
+			fi
+		fi
         
         if [[ -s "$temp_file" ]]; then
             local cc_count=0
