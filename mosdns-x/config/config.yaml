@@ -214,6 +214,13 @@ plugins:
       minimal_ttl: 60
       maximum_ttl: 300
 
+  # Ad-blocking blackhole (NULL IP response)
+  - tag: black_hole
+    type: blackhole
+    args:
+      rcode: 0
+      ipv4: ["0.0.0.0"]
+
   # ==========================================================================
   # ECS & DNS PROCESSING
   # ==========================================================================
@@ -339,7 +346,7 @@ plugins:
         # Reject deprecated ANY queries (ANY 255)
         - _reject_any
 
-        # Block malformed domains
+        # Reject malformed domains and invalid TLDs
         - if: "match_invalid_domain_format || !match_valid_tld"
           exec:
             - _new_nxdomain_response
@@ -388,13 +395,13 @@ plugins:
         # ====================================================================
         # PHASE 3: Ad-Blocking
         # ====================================================================
-        
+
         # Block ads/trackers (unless allowlisted)
         - if: "!match_allowlisted"
           exec:
             - if: match_blocklisted
               exec:
-                - _new_nxdomain_response
+                - black_hole    # return NULL IP 0.0.0.0
                 - _return
 
         # ====================================================================
