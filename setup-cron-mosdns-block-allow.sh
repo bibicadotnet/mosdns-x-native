@@ -16,14 +16,15 @@ cat > "$SCRIPT_FILE" << 'EOF'
 BLOCK_OUT="/home/mosdns-x/rules/blocklists.txt"
 ALLOW_OUT="/home/mosdns-x/rules/allowlists.txt"
 TLD_OUT="/home/mosdns-x/rules/valid_tlds.txt"
+CLOUDFRONT_OUT="/home/mosdns-x/rules/cloudfront_ips.txt"
 BLOCK_TMP="/tmp/blocklists.tmp"
 ALLOW_TMP="/tmp/allowlists.tmp"
 TLD_TMP="/tmp/valid_tlds.tmp"
-
+CLOUDFRONT_TMP="/tmp/cloudfront_ips.tmp"
 mkdir -p /home/mosdns-x/rules
 
 # Clean up temporary files on exit
-trap "rm -f $BLOCK_TMP $ALLOW_TMP $TLD_TMP; exit" INT TERM EXIT
+trap "rm -f $BLOCK_TMP $ALLOW_TMP $TLD_TMP $CLOUDFRONT_TMP; exit" INT TERM EXIT
 
 # Set low priority for CPU and I/O
 renice -n 19 -p $$ 2>/dev/null
@@ -63,12 +64,17 @@ https://raw.githubusercontent.com/bibicadotnet/AdGuard-Home-blocklists/refs/head
 # Download IANA TLDs list
 curl -fsSL --max-time 30 https://data.iana.org/TLD/tlds-alpha-by-domain.txt | grep -v '^#' | tr '[:upper:]' '[:lower:]' > "$TLD_TMP" &
 
+# Download AWS CloudFront IP ranges
+curl -fsSL --max-time 30 https://ip-ranges.amazonaws.com/ip-ranges.json | \
+jq -r '.prefixes[] | select(.service == "CLOUDFRONT") | .ip_prefix' > "$CLOUDFRONT_TMP" &
+
 wait
 
 # Replace existing files if download was successful (non-empty)
 [ -s "$BLOCK_TMP" ] && mv -f "$BLOCK_TMP" "$BLOCK_OUT"
 [ -s "$ALLOW_TMP" ] && mv -f "$ALLOW_TMP" "$ALLOW_OUT"
 [ -s "$TLD_TMP" ] && mv -f "$TLD_TMP" "$TLD_OUT"
+[ -s "$CLOUDFRONT_TMP" ] && mv -f "$CLOUDFRONT_TMP" "$CLOUDFRONT_OUT"
 EOF
 
 # Still keeping chmod for manual execution convenience
