@@ -17,14 +17,20 @@ BLOCK_OUT="/home/mosdns-x/rules/blocklists.txt"
 ALLOW_OUT="/home/mosdns-x/rules/allowlists.txt"
 TLD_OUT="/home/mosdns-x/rules/valid_tlds.txt"
 CLOUDFRONT_OUT="/home/mosdns-x/rules/cloudfront_ips.txt"
+FASTLY_OUT="/home/mosdns-x/rules/fastly_ips.txt"
+BUNNYCDN_OUT="/home/mosdns-x/rules/bunnycdn_ips.txt"
+GCORE_OUT="/home/mosdns-x/rules/gcore_ips.txt"
 BLOCK_TMP="/tmp/blocklists.tmp"
 ALLOW_TMP="/tmp/allowlists.tmp"
 TLD_TMP="/tmp/valid_tlds.tmp"
 CLOUDFRONT_TMP="/tmp/cloudfront_ips.tmp"
+FASTLY_TMP="/tmp/fastly_ips.tmp"
+BUNNYCDN_TMP="/tmp/bunnycdn_ips.tmp"
+GCORE_TMP="/tmp/gcore_ips.tmp"
 mkdir -p /home/mosdns-x/rules
 
 # Clean up temporary files on exit
-trap "rm -f $BLOCK_TMP $ALLOW_TMP $TLD_TMP $CLOUDFRONT_TMP; exit" INT TERM EXIT
+trap "rm -f $BLOCK_TMP $ALLOW_TMP $TLD_TMP $CLOUDFRONT_TMP $FASTLY_TMP $BUNNYCDN_TMP $GCORE_TMP; exit" INT TERM EXIT
 
 # Set low priority for CPU and I/O
 renice -n 19 -p $$ 2>/dev/null
@@ -68,6 +74,18 @@ curl -fsSL --max-time 30 https://data.iana.org/TLD/tlds-alpha-by-domain.txt | gr
 curl -fsSL --max-time 30 https://ip-ranges.amazonaws.com/ip-ranges.json | \
 jq -r '.prefixes[] | select(.service == "CLOUDFRONT") | .ip_prefix' > "$CLOUDFRONT_TMP" &
 
+# Download Fastly IP ranges
+curl -fsSL --max-time 30 https://api.fastly.com/public-ip-list | \
+jq -r '.addresses[]' > "$FASTLY_TMP" &
+
+# Download BunnyCDN IP ranges
+curl -fsSL --max-time 30 https://bunnycdn.com/api/system/edgeserverlist | \
+jq -r '.[]' > "$BUNNYCDN_TMP" &
+
+# Download Gcore IP ranges
+curl -fsSL --max-time 30 https://api.gcore.com/cdn/public-ip-list | \
+jq -r '.addresses[]' > "$GCORE_TMP" &
+
 wait
 
 # Replace existing files if download was successful (non-empty)
@@ -75,6 +93,9 @@ wait
 [ -s "$ALLOW_TMP" ] && mv -f "$ALLOW_TMP" "$ALLOW_OUT"
 [ -s "$TLD_TMP" ] && mv -f "$TLD_TMP" "$TLD_OUT"
 [ -s "$CLOUDFRONT_TMP" ] && mv -f "$CLOUDFRONT_TMP" "$CLOUDFRONT_OUT"
+[ -s "$FASTLY_TMP" ] && mv -f "$FASTLY_TMP" "$FASTLY_OUT"
+[ -s "$BUNNYCDN_TMP" ] && mv -f "$BUNNYCDN_TMP" "$BUNNYCDN_OUT"
+[ -s "$GCORE_TMP" ] && mv -f "$GCORE_TMP" "$GCORE_OUT"
 EOF
 
 # Still keeping chmod for manual execution convenience
