@@ -302,14 +302,4 @@ vedcdnlb.com
 tbcache.com
 tikicdn.com
 vcdn.cloud
-regexp:^static\.
-regexp:^assets\.
-regexp:^cache\.
-regexp:^media\.
-regexp:^images\.
-regexp:^cdn[0-9]*\.
 keyword:cdn
-keyword:edge
-keyword:delivery
-keyword:accelerate
-keyword:mirror

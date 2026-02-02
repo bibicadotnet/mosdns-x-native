@@ -1,13 +1,9 @@
+# Local Domain
+
+
 # RCODE 3 (NXDOMAIN)
-tendawifi.com
-mshome.net
-home.arpa
-version.bind
-id.server
-hostname.bind
-authors.bind
+
 
 # RCODE 2 (SERVFAIL)
 
 
-# RCODE 2 (SERVFAIL) RCODE 3 (NXDOMAIN)
