@@ -103,7 +103,7 @@ plugins:
     type: query_matcher
     args:
       domain:
-        - 'regexp:[^a-zA-Z0-9._-]'      # Illegal characters
+        - 'regexp:[^a-zA-Z0-9._-]'       # Illegal characters
         - 'regexp:^[^.]+$'               # Single-label (no dot)
         - 'regexp:^.{254,}$'             # Length > 253
         - 'regexp:^[^.]{64,}\.'          # Label > 63 chars (start)
@@ -390,10 +390,12 @@ plugins:
         # ====================================================================
         
         # Block ads/trackers (unless allowlisted)
-        - if: "match_blocklisted && !match_allowlisted"
+        - if: "!match_allowlisted"
           exec:
-            - _new_nxdomain_response
-            - _return
+            - if: match_blocklisted
+              exec:
+                - _new_nxdomain_response
+                - _return
 
         # ====================================================================
         # PHASE 4: Query Logging & Routing
