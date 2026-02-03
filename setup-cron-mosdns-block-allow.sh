@@ -88,14 +88,14 @@ jq -r '.addresses[]' > "$GCORE_TMP" &
 
 wait
 
-# Replace existing files if download was successful (non-empty)
-[ -s "$BLOCK_TMP" ] && mv -f "$BLOCK_TMP" "$BLOCK_OUT"
-[ -s "$ALLOW_TMP" ] && mv -f "$ALLOW_TMP" "$ALLOW_OUT"
-[ -s "$TLD_TMP" ] && mv -f "$TLD_TMP" "$TLD_OUT"
-[ -s "$CLOUDFRONT_TMP" ] && mv -f "$CLOUDFRONT_TMP" "$CLOUDFRONT_OUT"
-[ -s "$FASTLY_TMP" ] && mv -f "$FASTLY_TMP" "$FASTLY_OUT"
-[ -s "$BUNNYCDN_TMP" ] && mv -f "$BUNNYCDN_TMP" "$BUNNYCDN_OUT"
-[ -s "$GCORE_TMP" ] && mv -f "$GCORE_TMP" "$GCORE_OUT"
+# Replace existing files if download was successful (non-empty) and content changed or file doesn't exist
+[ -s "$BLOCK_TMP" ] && { [ ! -f "$BLOCK_OUT" ] || ! cmp -s "$BLOCK_TMP" "$BLOCK_OUT"; } && mv -f "$BLOCK_TMP" "$BLOCK_OUT"
+[ -s "$ALLOW_TMP" ] && { [ ! -f "$ALLOW_OUT" ] || ! cmp -s "$ALLOW_TMP" "$ALLOW_OUT"; } && mv -f "$ALLOW_TMP" "$ALLOW_OUT"
+[ -s "$TLD_TMP" ] && { [ ! -f "$TLD_OUT" ] || ! cmp -s "$TLD_TMP" "$TLD_OUT"; } && mv -f "$TLD_TMP" "$TLD_OUT"
+[ -s "$CLOUDFRONT_TMP" ] && { [ ! -f "$CLOUDFRONT_OUT" ] || ! cmp -s "$CLOUDFRONT_TMP" "$CLOUDFRONT_OUT"; } && mv -f "$CLOUDFRONT_TMP" "$CLOUDFRONT_OUT"
+[ -s "$FASTLY_TMP" ] && { [ ! -f "$FASTLY_OUT" ] || ! cmp -s "$FASTLY_TMP" "$FASTLY_OUT"; } && mv -f "$FASTLY_TMP" "$FASTLY_OUT"
+[ -s "$BUNNYCDN_TMP" ] && { [ ! -f "$BUNNYCDN_OUT" ] || ! cmp -s "$BUNNYCDN_TMP" "$BUNNYCDN_OUT"; } && mv -f "$BUNNYCDN_TMP" "$BUNNYCDN_OUT"
+[ -s "$GCORE_TMP" ] && { [ ! -f "$GCORE_OUT" ] || ! cmp -s "$GCORE_TMP" "$GCORE_OUT"; } && mv -f "$GCORE_TMP" "$GCORE_OUT"
 EOF
 
 # Still keeping chmod for manual execution convenience
