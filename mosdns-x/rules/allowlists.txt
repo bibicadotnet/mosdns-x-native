@@ -15,5 +15,6 @@ controld.com
 tolt.io
 iplocate.io
 vlxx.bz
+vlxx.ms
 click.mz.simba.taobao.com
 click.tz.simba.taobao.com
