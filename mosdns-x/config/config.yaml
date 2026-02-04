@@ -98,21 +98,13 @@ plugins:
       client_ip:
         - "127.0.0.0/8"
 
-  # Domain validation - Invalid format detection
+  # Domain validation – prevent common human typing errors
   - tag: match_invalid_domain_format
     type: query_matcher
     args:
       domain:
-        - 'regexp:[^a-zA-Z0-9._-]'       # Illegal characters
-        - 'regexp:^[^.]+$'               # Single-label (no dot)
-        - 'regexp:^.{254,}$'             # Length > 253
-        - 'regexp:^[^.]{64,}\.'          # Label > 63 chars (start)
-        - 'regexp:\.[^.]{64,}\.'         # Label > 63 chars (middle)
-        - 'regexp:\.[^.]{64,}$'          # Label > 63 chars (end)
-        - 'regexp:^-[^.]+'               # Label starts with hyphen
-        - 'regexp:\.-[^.]+'              # Label starts with hyphen (after dot)
-        - 'regexp:[^.]+-$'               # Label ends with hyphen
-        - 'regexp:[^.]+-\.'              # Label ends with hyphen (before dot)
+        - 'regexp:[^a-zA-Z0-9._-]'   # Common typos / special characters (e.g. !, @, #, spaces)
+        - 'regexp:^[^.]+$'           # Missing dot / TLD (e.g. "google" instead of "google.com")
 
   # Domain validation - Valid TLD check
   - tag: match_valid_tld
@@ -339,6 +331,7 @@ plugins:
     type: sequence
     args:
       exec:
+        
         # ====================================================================
         # PHASE 1: Request Validation & Filtering
         # ====================================================================
@@ -346,32 +339,20 @@ plugins:
         # Reject deprecated ANY queries (ANY 255)
         - _reject_any
 
-        # Reject malformed domains and invalid TLDs
-        - if: "match_invalid_domain_format || !match_valid_tld"
-          exec:
-            - _new_nxdomain_response
-            - _return
-
-        # Block IPv6 queries (AAAA 28)
-        - if: query_is_ipv6
-          exec:
-            - _new_empty_response
-            - _return
-
-        # Block reverse DNS (PTR 12)
-        - if: query_is_ptr
-          exec:
-            - _new_empty_response
-            - _return
-
-        # Block HTTPS record queries (HTTPS 65)
-        - if: query_is_https
+        # Block IPv6 (28), PTR (12), and HTTPS (65) records
+        - if: "query_is_ipv6 || query_is_ptr || query_is_https"
           exec:
             - _new_empty_response
             - _return
 
         # Block private TLDs (.local, .localhost, etc.)
         - if: match_domain_private_tld
+          exec:
+            - _new_nxdomain_response
+            - _return
+
+        # Reject malformed domains and invalid TLDs
+        - if: "match_invalid_domain_format || !match_valid_tld"
           exec:
             - _new_nxdomain_response
             - _return
