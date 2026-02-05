@@ -331,6 +331,16 @@ plugins:
     type: sequence
     args:
       exec:
+        # --------------------------------------------------------------------
+        # PHASE 0: CACHE SHORTCUT (Fast Path)
+        # --------------------------------------------------------------------
+        # The lookup order is prioritized by cache size and traffic volume.
+        # Short-circuits the pipeline if a record exists in memory.
+        - cloudflare_cache
+        - google_cache
+        - cdn_direct_cache
+        - cdn_cname_cache
+        - mullvad_cache
         
         # ====================================================================
         # PHASE 1: Request Validation & Filtering
@@ -391,28 +401,21 @@ plugins:
         
         #- _query_summary
 
-        # Route: Google domains → Google DNS (with ECS, non-localhost)
-        - if: "match_google_domain && !query_matcher_localhost"
-          exec:
-            - ecs_handler
-            - google_cache
-            - upstream_google
-            - if: response_server_failed
-              exec:
-                - upstream_google
-            - response_max_2_ips
-            - ttl_short
-            - _no_cname
-            - _return
-
-        # Route: Google domains → Google DNS (no ECS, localhost only)
+        # Route: Google domains → Google DNS (with conditional ECS)
         - if: match_google_domain
           exec:
+            # Add ECS if not from localhost
+            - if: "!query_matcher_localhost"
+              exec:
+                - ecs_handler
             - google_cache
             - upstream_google
             - if: response_server_failed
               exec:
                 - upstream_google
+                - if: response_server_failed
+                  exec:
+                    - _return
             - response_max_2_ips
             - ttl_short
             - _no_cname
@@ -427,6 +430,9 @@ plugins:
             - if: response_server_failed
               exec:
                 - upstream_cloudflare_gateway
+                - if: response_server_failed
+                  exec:
+                    - _return
             - response_max_2_ips
             - ttl_short
             - _no_cname
@@ -440,6 +446,9 @@ plugins:
             - if: response_server_failed
               exec:
                 - upstream_mullvad
+                - if: response_server_failed
+                  exec:
+                    - _return
             - response_max_2_ips
             - ttl_short
             - _no_cname
@@ -451,6 +460,9 @@ plugins:
         - if: response_server_failed
           exec:
             - upstream_cloudflare
+            - if: response_server_failed
+              exec:
+                - _return
         - response_max_2_ips
         - ttl_short
         - _no_cname
@@ -468,6 +480,9 @@ plugins:
             - if: response_server_failed
               exec:
                 - upstream_cloudflare_gateway
+                - if: response_server_failed
+                  exec:
+                    - _return
             - response_max_2_ips
             - ttl_short
             - _no_cname
