@@ -7,7 +7,7 @@
 # LOGGING & DIAGNOSTICS
 # ============================================================================
 log:
-  level: error	# Options: debug, info, error, warn
+  level: info	# Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
@@ -159,11 +159,6 @@ plugins:
   # ==========================================================================
   # RESPONSE MODIFIERS
   # ==========================================================================
-  
-  - tag: response_max_2_ips
-    type: limit_ip
-    args:
-      limit: 2
 
   - tag: ttl_short
     type: ttl
@@ -342,7 +337,7 @@ plugins:
         # PHASE 4: Query Logging & Routing
         # ====================================================================
         
-        #- _query_summary
+        - _query_summary
 
         # Route: Google domains → Google DNS (with conditional ECS)
         - if: match_google_domain
@@ -359,9 +354,9 @@ plugins:
                 - if: response_server_failed
                   exec:
                     - _return
-            - _no_cname
-            - response_max_2_ips
+            - _limit_2_ips
             - ttl_short
+            - _no_cname
             - _return
 
         # Route: CDN domains → Cloudflare Gateway (with ECS)
@@ -376,9 +371,9 @@ plugins:
                 - if: response_server_failed
                   exec:
                     - _return
-            - _no_cname
-            - response_max_2_ips
+            - _limit_2_ips
             - ttl_short
+            - _no_cname
             - _return
 
         # Route: Mullvad domains → Mullvad DNS
@@ -392,9 +387,9 @@ plugins:
                 - if: response_server_failed
                   exec:
                     - _return
-            - _no_cname
-            - response_max_2_ips
+            - _limit_2_ips
             - ttl_short
+            - _no_cname
             - _return
 
         # Route: Everything else → Cloudflare DNS (default)
@@ -406,9 +401,10 @@ plugins:
             - if: response_server_failed
               exec:
                 - _return
-        - _no_cname
-        - response_max_2_ips
+        - _limit_2_ips
         - ttl_short
+        - _no_cname
+        - _return
 
         # ====================================================================
         # PHASE 5: CDN Detection & Re-resolution
@@ -427,9 +423,9 @@ plugins:
                   exec:
                     - _return
             - cdn_list_exporter
-            - _no_cname
-            - response_max_2_ips
+            - _limit_2_ips
             - ttl_short
+            - _no_cname
             - _return
 
 # ============================================================================
