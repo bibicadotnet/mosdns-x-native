@@ -7,7 +7,7 @@
 # LOGGING
 # ============================================================================
 log:
-  level: error	# Options: debug, info, error, warn
+  level: info	# Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
@@ -230,6 +230,15 @@ plugins:
         - "provider:redirect_rules"
 
   # ==========================================================================
+  # DYNAMIC COLLECTOR - Self-learning CDN domains
+  # ==========================================================================
+
+  - tag: cdn_list_exporter
+    type: dynamic_domain_collector
+    args:
+      file: "rules/cdn_domains.txt"
+
+  # ==========================================================================
   # MEMORY CACHE - Per-upstream caching strategy
   # ==========================================================================
   
@@ -331,17 +340,7 @@ plugins:
     type: sequence
     args:
       exec:
-        # --------------------------------------------------------------------
-        # PHASE 0: CACHE SHORTCUT (Fast Path)
-        # --------------------------------------------------------------------
-        # The lookup order is prioritized by cache size and traffic volume.
-        # Short-circuits the pipeline if a record exists in memory.
-        - cloudflare_cache
-        - google_cache
-        - cdn_direct_cache
-        - cdn_cname_cache
-        - mullvad_cache
-        
+
         # ====================================================================
         # PHASE 1: Request Validation & Filtering
         # ====================================================================
@@ -399,7 +398,7 @@ plugins:
         # PHASE 4: Query Logging & Routing
         # ====================================================================
         
-        #- _query_summary
+        - _query_summary
 
         # Route: Google domains → Google DNS (with conditional ECS)
         - if: match_google_domain
@@ -483,6 +482,7 @@ plugins:
                 - if: response_server_failed
                   exec:
                     - _return
+            - cdn_list_exporter
             - response_max_2_ips
             - ttl_short
             - _no_cname
