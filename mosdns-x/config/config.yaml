@@ -4,20 +4,16 @@
 # =============================================================================
 
 # ============================================================================
-# LOGGING
+# LOGGING & DIAGNOSTICS
 # ============================================================================
 log:
-  level: info	# Options: debug, info, error, warn
+  level: error	# Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 # ============================================================================
 # DATA PROVIDERS - External domain lists and rules
 # ============================================================================
 data_providers:
-  # TLD validation
-  - tag: provider_valid_tlds
-    file: "rules/valid_tlds.txt"
-    auto_reload: true
 
   - tag: domain_list_private_tlds
     file: "rules/private_tlds.txt"
@@ -74,22 +70,6 @@ plugins:
   # ==========================================================================
   # QUERY MATCHERS - Identify query types and sources
   # ==========================================================================
-  
-  # Query type matchers
-  - tag: query_is_ptr
-    type: query_matcher
-    args:
-      qtype: [12] # PTR (reverse DNS)
-
-  - tag: query_is_ipv6
-    type: query_matcher
-    args:
-      qtype: [28] # AAAA (IPv6)
-
-  - tag: query_is_https
-    type: query_matcher
-    args:
-      qtype: [65] # HTTPS record
 
   # Client source matcher
   - tag: query_matcher_localhost
@@ -97,21 +77,6 @@ plugins:
     args:
       client_ip:
         - "127.0.0.0/8"
-
-  # Domain validation – prevent common human typing errors
-  - tag: match_invalid_domain_format
-    type: query_matcher
-    args:
-      domain:
-        - 'regexp:[^a-zA-Z0-9._-]'   # Common typos / special characters (e.g. !, @, #, spaces)
-        - 'regexp:^[^.]+$'           # Missing dot / TLD (e.g. "google" instead of "google.com")
-
-  # Domain validation - Valid TLD check
-  - tag: match_valid_tld
-    type: query_matcher
-    args:
-      domain:
-        - "provider:provider_valid_tlds"
 
   # Private TLD matcher (RFC 6761)
   - tag: match_domain_private_tld
@@ -247,52 +212,47 @@ plugins:
     type: cache
     args:
       size: 424550 # google_cache
-      compress_resp: false
-      cache_everything: true
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
-
+      cleaner_interval: 60
+      
   # CDN direct cache (with ECS support)
   - tag: cdn_direct_cache
     type: cache
     args:
       size: 283034 # cdn_direct_cache
-      compress_resp: false
-      cache_everything: true
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
-
+      cleaner_interval: 62
+      
   # CDN CNAME cache (with ECS support)
   - tag: cdn_cname_cache
     type: cache
     args:
       size: 283034 # cdn_cname_cache
-      compress_resp: false
-      cache_everything: true
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
-
+      cleaner_interval: 64
+      
   # Mullvad cache (no ECS)
   - tag: mullvad_cache
     type: cache
     args:
       size: 1024 # mullvad_cache
-      compress_resp: false
-      cache_everything: false
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
-
+      cleaner_interval: 66
+      
   # Cloudflare cache (no ECS)
   - tag: cloudflare_cache
     type: cache
     args:
       size: 849101 # cloudflare_cache
-      compress_resp: false
-      cache_everything: false
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
+      cleaner_interval: 68
 
-  # ==========================================================================
+# ==========================================================================
   # UPSTREAM RESOLVERS
   # ==========================================================================
   
@@ -340,51 +300,28 @@ plugins:
     type: sequence
     args:
       exec:
+        # ====================================================================
+        # PHASE 1: Request Validation & Initial Cleaning
+        # ====================================================================
+
+        # Reject Qtypes (ANY, AAAA, PTR, HTTPS) and common human typing errors
+        - _pre_reject
+
+        # Strip EDNS0 / ECS early to ensure clean packets for all matchers
+        - _edns0_filter_no_edns0
+
+        # Check whether the packet is a valid DNS query
+        - _misc_optm
 
         # ====================================================================
-        # PHASE 1: Request Validation & Filtering
+        # PHASE 2: Policy Enforcement
         # ====================================================================
-        
-        # Reject deprecated ANY queries (ANY 255)
-        - _reject_any
 
-        # Block IPv6 (28), PTR (12), and HTTPS (65) records
-        - if: "query_is_ipv6 || query_is_ptr || query_is_https"
-          exec:
-            - _new_empty_response
-            - _return
-
-        # Block private TLDs (.local, .localhost, etc.)
+        # Block Private TLDs (.local, .lan, etc.)
         - if: match_domain_private_tld
           exec:
             - _new_nxdomain_response
             - _return
-
-        # Reject malformed domains and invalid TLDs
-        - if: "match_invalid_domain_format || !match_valid_tld"
-          exec:
-            - _new_nxdomain_response
-            - _return
-
-        # ====================================================================
-        # PHASE 2: Query Preparation
-        # ====================================================================
-        
-        # Remove client ECS
-        - _no_ecs
-
-        # Clean EDNS0 options
-        - _edns0_filter_no_edns0
-
-        # Apply performance optimizations
-        - _misc_optm
-
-        # Apply DNS rewrites (local overrides)
-        - dns_redirect
-
-        # ====================================================================
-        # PHASE 3: Ad-Blocking
-        # ====================================================================
 
         # Block ads/trackers (unless allowlisted)
         - if: "!match_allowlisted"
@@ -395,10 +332,17 @@ plugins:
                 - _return
 
         # ====================================================================
+        # PHASE 3: Final Processing
+        # ====================================================================
+
+        # Apply DNS rewrites (local overrides)
+        - dns_redirect
+
+        # ====================================================================
         # PHASE 4: Query Logging & Routing
         # ====================================================================
         
-        - _query_summary
+        #- _query_summary
 
         # Route: Google domains → Google DNS (with conditional ECS)
         - if: match_google_domain
