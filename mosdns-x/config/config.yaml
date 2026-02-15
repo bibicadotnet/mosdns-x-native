@@ -359,9 +359,9 @@ plugins:
                 - if: response_server_failed
                   exec:
                     - _return
+            - _no_cname
             - response_max_2_ips
             - ttl_short
-            - _no_cname
             - _return
 
         # Route: CDN domains → Cloudflare Gateway (with ECS)
@@ -376,9 +376,9 @@ plugins:
                 - if: response_server_failed
                   exec:
                     - _return
+            - _no_cname
             - response_max_2_ips
             - ttl_short
-            - _no_cname
             - _return
 
         # Route: Mullvad domains → Mullvad DNS
@@ -392,9 +392,9 @@ plugins:
                 - if: response_server_failed
                   exec:
                     - _return
+            - _no_cname
             - response_max_2_ips
             - ttl_short
-            - _no_cname
             - _return
 
         # Route: Everything else → Cloudflare DNS (default)
@@ -406,9 +406,9 @@ plugins:
             - if: response_server_failed
               exec:
                 - _return
+        - _no_cname
         - response_max_2_ips
         - ttl_short
-        - _no_cname
 
         # ====================================================================
         # PHASE 5: CDN Detection & Re-resolution
@@ -427,9 +427,9 @@ plugins:
                   exec:
                     - _return
             - cdn_list_exporter
+            - _no_cname
             - response_max_2_ips
             - ttl_short
-            - _no_cname
             - _return
 
 # ============================================================================
