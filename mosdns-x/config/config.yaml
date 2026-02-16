@@ -295,18 +295,17 @@ plugins:
     type: sequence
     args:
       exec:
-        # ====================================================================
-        # PHASE 1: Request Validation & Initial Cleaning
-        # ====================================================================
 
-        # Reject Qtypes (ANY, AAAA, PTR, HTTPS) and common human typing errors
-        - _pre_reject
+        # Note: Reject Qtypes (ANY, AAAA, PTR, HTTPS), common human typing 
+        # errors, and basic validation (_misc_optm) are now handled 
+        # natively in entry_handler.go for maximum performance.
+        
+        # ====================================================================
+        # PHASE 1: Packet Pre-processing
+        # ====================================================================
 
         # Strip EDNS0 / ECS early to ensure clean packets for all matchers
         - _edns0_filter_no_edns0
-
-        # Check whether the packet is a valid DNS query
-        - _misc_optm
 
         # ====================================================================
         # PHASE 2: Policy Enforcement
@@ -401,10 +400,6 @@ plugins:
             - if: response_server_failed
               exec:
                 - _return
-        - _limit_2_ips
-        - ttl_short
-        - _no_cname
-        - _return
 
         # ====================================================================
         # PHASE 5: CDN Detection & Re-resolution
@@ -427,6 +422,11 @@ plugins:
             - ttl_short
             - _no_cname
             - _return
+
+        # Final adjustments for "Everything else" (non-CDN responses from Cloudflare)
+        - _limit_2_ips
+        - ttl_short
+        - _no_cname
 
 # ============================================================================
 # SERVERS - Protocol Listeners
