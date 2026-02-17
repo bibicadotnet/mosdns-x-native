@@ -344,43 +344,44 @@ create_renewal_script() {
 #!/bin/bash
 set -euo pipefail
 
-DOMAIN="$domain"
-TOKEN_FILE="$TOKEN_FILE"
-CERT_FILE="/home/lego/certificates/\${DOMAIN}.crt"
-RENEW_DAYS=30
+DOMAIN="dns.bibica.net"
+TOKEN_FILE="/home/lego/.cloudflare-token"
+CERT_FILE="/home/lego/certificates/${DOMAIN}.crt"
+RENEW_DAYS=60
 
-[[ ! -f "\$TOKEN_FILE" ]] && { echo "Token not found!"; exit 1; }
-[[ ! -f "\$CERT_FILE" ]] && { echo "Certificate not found!"; exit 1; }
+[[ ! -f "$TOKEN_FILE" ]] && { echo "Error: Token file not found!"; exit 1; }
+[[ ! -f "$CERT_FILE" ]] && { echo "Error: Certificate file not found!"; exit 1; }
 
-API_TOKEN=\$(cat "\$TOKEN_FILE")
-EXPIRY_DATE=\$(openssl x509 -in "\$CERT_FILE" -noout -enddate | cut -d= -f2)
-EXPIRY_EPOCH=\$(date -d "\$EXPIRY_DATE" +%s)
-CURRENT_EPOCH=\$(date +%s)
-DAYS_LEFT=\$(( (EXPIRY_EPOCH - CURRENT_EPOCH) / 86400 ))
+API_TOKEN=$(cat "$TOKEN_FILE")
+EXPIRY_DATE=$(openssl x509 -in "$CERT_FILE" -noout -enddate | cut -d= -f2)
+EXPIRY_EPOCH=$(date -d "$EXPIRY_DATE" +%s)
+CURRENT_EPOCH=$(date +%s)
+DAYS_LEFT=$(( (EXPIRY_EPOCH - CURRENT_EPOCH) / 86400 ))
 
-echo "Certificate expires in \$DAYS_LEFT days"
+echo "Certificate for $DOMAIN expires in $DAYS_LEFT days."
 
-if [[ \$DAYS_LEFT -lt \$RENEW_DAYS ]]; then
-    echo "Renewing certificate..."
-    cd /home/lego
-    CLOUDFLARE_DNS_API_TOKEN="\$API_TOKEN" \\
-        /home/lego/lego --accept-tos \\
-        --dns cloudflare \\
-        --domains "\$DOMAIN" \\
-        --domains "*.\$DOMAIN" \\
-        --email "admin@\${DOMAIN}" \\
-        --path /home/lego \\
-        renew --preferred-chain="ISRG Root X1"
+if [[ $DAYS_LEFT -lt $RENEW_DAYS ]]; then
+    echo "Days left is below threshold ($RENEW_DAYS). Attempting renewal..."
     
-    if [[ \$? -eq 0 ]]; then
-        systemctl reload mosdns 2>/dev/null || systemctl restart mosdns
-        echo "Certificate renewed!"
+    cd /home/lego
+    
+    # Run lego and check exit status directly
+    if CLOUDFLARE_DNS_API_TOKEN="$API_TOKEN" \
+        /home/lego/lego --accept-tos \
+        --dns cloudflare \
+        --domains "$DOMAIN" \
+        --domains "*.$DOMAIN" \
+        --email "admin@${DOMAIN}" \
+        --path /home/lego \
+        renew --days "$RENEW_DAYS" --preferred-chain="ISRG Root X1"; then
+        
+        echo "Success: Certificate renewed! Mosdns-x will hot-reload automatically."
     else
-        echo "Renewal failed!"
+        echo "Failure: Lego renewal process failed!"
         exit 1
     fi
 else
-    echo "Certificate still valid"
+    echo "Status: Certificate is still valid. No action taken."
 fi
 EOF
     
