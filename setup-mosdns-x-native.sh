@@ -338,13 +338,12 @@ EOF
 
 # Create renewal script
 create_renewal_script() {
-    local domain=$1
-    
-    cat > /home/lego/renew-cert.sh <<EOF
+
+    cat > /home/lego/renew-cert.sh <<'EOF'
 #!/bin/bash
 set -euo pipefail
 
-DOMAIN="$domain"
+DOMAIN=$(cat /home/lego/.domain)
 TOKEN_FILE="/home/lego/.cloudflare-token"
 CERT_FILE="/home/lego/certificates/${DOMAIN}.crt"
 RENEW_DAYS=60
