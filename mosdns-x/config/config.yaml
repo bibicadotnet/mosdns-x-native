@@ -10,6 +10,8 @@ log:
   level: info	# Options: debug, info, error, warn
   file: "log/mosdns.log"
 
+api:
+    http: "127.0.0.1:9080"
 # ============================================================================
 # DATA PROVIDERS - External domain lists and rules
 # ============================================================================
@@ -433,6 +435,12 @@ plugins:
 # ============================================================================
 servers:
   - exec: main
+    # Early blocking options
+    block_aaaa: false      # Block IPv6 AAAA (28) queries
+    block_ptr: true       # Block Reverse DNS PTR (12) queries
+    block_https: true     # Block HTTPS (65) type queries
+    block_no_dot: true    # Block domains without a dot
+
     listeners:
       # DNS-over-UDP
       - protocol: udp
