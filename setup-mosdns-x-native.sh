@@ -344,7 +344,7 @@ create_renewal_script() {
 #!/bin/bash
 set -euo pipefail
 
-DOMAIN="dns.bibica.net"
+DOMAIN="$domain"
 TOKEN_FILE="/home/lego/.cloudflare-token"
 CERT_FILE="/home/lego/certificates/${DOMAIN}.crt"
 RENEW_DAYS=60
