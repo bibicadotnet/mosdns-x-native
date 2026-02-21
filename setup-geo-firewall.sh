@@ -1,43 +1,51 @@
 #!/bin/bash
 # setup-geo-firewall.sh
-# GeoIP-based firewall with Docker support + Rate Limiting - production ready
-# Detect public IP
+# GeoIP-based firewall with Docker support + L4 Protection
+
 PUBLIC_IP=$(curl -s https://api.ipify.org)
 
 # ==============================
 # USER CONFIGURATION
 # ==============================
 ALLOW_COUNTRIES=("VN" "SG" "JP" "HK")
-ALLOW_TCP_PORTS=("22" "2224" "443" "853")
-ALLOW_UDP_PORTS=("443" "853")
+ALLOW_TCP_PORTS=("22" "2224" "53" "443" "853")
+ALLOW_UDP_PORTS=("53" "443" "853")
 
 # PING Configuration
-ENABLE_PING=false  # true
+ENABLE_PING=false
 
-# RATE LIMITING Configuration
+# CONNECTION LIMIT per IP (TCP only — meaningful for SSH)
+ENABLE_CONN_LIMIT=true
+CONN_LIMIT_PER_IP=5
+
+# SYN FLOOD Protection (TCP --syn only — meaningful for SSH)
+ENABLE_SYN_LIMIT=true
+SYN_RATE_PER_SECOND=5
+SYN_BURST=10
+
+# RATE LIMITING (all packets — only effective control for DNS)
+# Intentionally before ESTABLISHED,RELATED so DNS connection reuse is counted
 ENABLE_RATE_LIMIT=true
-RATE_LIMIT_PER_SECOND=50  # connections per second per IP
-RATE_LIMIT_BURST=100       # allow short bursts
+RATE_LIMIT_PER_SECOND=100
+RATE_LIMIT_BURST=100
 
 # ALLOWLIST CONFIGURATION
 ALLOWLIST_URLS=(
     "https://hetrixtools.com/resources/uptime-monitor-only-ips.txt"
     "https://www.cloudflare.com/ips-v4/"
 )
-
-# Contabo Singapore Data Center - check-host.net
-# Add your trusted IPs here
 ALLOWLIST_IPS=("217.15.166.168" "$PUBLIC_IP")
 
 # ==============================
 # SYSTEM CONFIGURATION
 # ==============================
 SCRIPT_DIR="/home/geo-firewall"
+DATA_DIR="$SCRIPT_DIR/data"
+HASH_DIR="$SCRIPT_DIR/hash"
 FIREWALL_SCRIPT="$SCRIPT_DIR/geo-firewall.sh"
 SERVICE_FILE="/etc/systemd/system/geo-firewall.service"
 RESET_SCRIPT="$SCRIPT_DIR/emergency-reset.sh"
 
-# Chain/IPSet names (MUST match in all scripts)
 CHAIN_INPUT="GEO_INPUT"
 CHAIN_DOCKER="GEO_DOCKER"
 IPSET_COUNTRY="geo_country"
@@ -55,48 +63,56 @@ log() {
 }
 
 # ==============================
+# KERNEL HARDENING
+# ==============================
+apply_kernel_tuning() {
+    log "Applying kernel hardening..."
+    cat > /etc/sysctl.d/99-geo-firewall.conf << 'EOF'
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_max_syn_backlog = 4096
+net.core.somaxconn = 4096
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_tw_reuse = 1
+EOF
+    sysctl --system >/dev/null
+    log "✓ Kernel hardening applied"
+}
+
+# ==============================
 # CLEANUP FUNCTION
 # ==============================
 cleanup_all() {
-    log "Cleaning up all existing configurations..."
-    
-    # Stop and disable service
+    log "Cleaning up existing configurations..."
+
     if systemctl is-active --quiet geo-firewall.service 2>/dev/null; then
         systemctl stop geo-firewall.service 2>/dev/null || true
     fi
     systemctl disable geo-firewall.service 2>/dev/null || true
-    
-    # Remove iptables rules
+
     iptables -D INPUT -j "$CHAIN_INPUT" 2>/dev/null || true
     iptables -D DOCKER-USER -j "$CHAIN_DOCKER" 2>/dev/null || true
-    
+
     for chain in "$CHAIN_INPUT" "$CHAIN_DOCKER"; do
         iptables -F "$chain" 2>/dev/null || true
         iptables -X "$chain" 2>/dev/null || true
     done
-    
-    # Remove ipsets
-    for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST"; do
+
+    for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
         ipset destroy "$ipset_name" 2>/dev/null || true
     done
-    
-    # Remove cron job
+
     crontab -l 2>/dev/null | grep -v "$FIREWALL_SCRIPT" | crontab - 2>/dev/null || true
-    
-    # Remove systemd service file
+
     rm -f "$SERVICE_FILE"
     systemctl daemon-reload 2>/dev/null || true
-    
-    # Remove script directory
     rm -rf "$SCRIPT_DIR"
-    
-    # Save clean iptables state
+
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
     if command -v netfilter-persistent >/dev/null; then
         netfilter-persistent save 2>/dev/null || true
     fi
-    
+
     log "✓ Cleanup complete"
 }
 
@@ -115,11 +131,9 @@ else
     exit 1
 fi
 
-# Clean up before starting
+apply_kernel_tuning
 cleanup_all
-
-# Create script directory
-mkdir -p "$SCRIPT_DIR"
+mkdir -p "$SCRIPT_DIR" "$DATA_DIR" "$HASH_DIR"
 
 # ==============================
 # GENERATE EMERGENCY RESET SCRIPT
@@ -130,7 +144,6 @@ cat > "$RESET_SCRIPT" << 'EOF_RESET'
 #!/bin/bash
 set -euo pipefail
 
-# MUST match setup script
 SCRIPT_DIR="/home/geo-firewall"
 FIREWALL_SCRIPT="$SCRIPT_DIR/geo-firewall.sh"
 SERVICE_FILE="/etc/systemd/system/geo-firewall.service"
@@ -143,44 +156,40 @@ echo "=========================================="
 echo "⚠️  EMERGENCY FIREWALL RESET"
 echo "=========================================="
 
-# Stop and disable service
 if systemctl is-active --quiet geo-firewall.service 2>/dev/null; then
     systemctl stop geo-firewall.service 2>/dev/null || true
     echo "✓ Service stopped"
 fi
 systemctl disable geo-firewall.service 2>/dev/null || true
 
-# Remove chain references
 iptables -D INPUT -j "$CHAIN_INPUT" 2>/dev/null || true
 iptables -D DOCKER-USER -j "$CHAIN_DOCKER" 2>/dev/null || true
 
-# Flush and delete chains
 for chain in "$CHAIN_INPUT" "$CHAIN_DOCKER"; do
     iptables -F "$chain" 2>/dev/null || true
     iptables -X "$chain" 2>/dev/null || true
 done
 echo "✓ Firewall chains removed"
 
-# Destroy ipsets
-for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST"; do
+for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
     ipset destroy "$ipset_name" 2>/dev/null || true
 done
 echo "✓ IPsets destroyed"
 
-# Remove cron job
 crontab -l 2>/dev/null | grep -v "$FIREWALL_SCRIPT" | crontab - 2>/dev/null || true
 echo "✓ Cron job removed"
 
-# Remove systemd service
 rm -f "$SERVICE_FILE"
 systemctl daemon-reload 2>/dev/null || true
 echo "✓ Systemd service removed"
 
-# Remove script directory
 rm -rf "$SCRIPT_DIR"
 echo "✓ Scripts removed"
 
-# Save clean state
+rm -f /etc/sysctl.d/99-geo-firewall.conf
+sysctl --system >/dev/null 2>&1 || true
+echo "✓ Kernel tuning reverted"
+
 mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4
 if command -v netfilter-persistent >/dev/null; then
@@ -196,7 +205,7 @@ EOF_RESET
 chmod +x "$RESET_SCRIPT"
 
 # ==============================
-# GENERATE MAIN FIREWALL SCRIPT
+# GENERATE FIREWALL SCRIPT
 # ==============================
 log "Generating firewall script..."
 
@@ -204,16 +213,26 @@ cat > "$FIREWALL_SCRIPT" << 'EOF_MAIN'
 #!/bin/bash
 set -euo pipefail
 
-# Configuration
+# Configuration (injected by sed)
 ALLOW_COUNTRIES=()
 ALLOW_TCP_PORTS=()
 ALLOW_UDP_PORTS=()
 ALLOWLIST_URLS=()
 ALLOWLIST_IPS=()
 ENABLE_PING=false
+ENABLE_CONN_LIMIT=false
+CONN_LIMIT_PER_IP=20
+ENABLE_SYN_LIMIT=false
+SYN_RATE_PER_SECOND=20
+SYN_BURST=40
 ENABLE_RATE_LIMIT=false
-RATE_LIMIT_PER_SECOND=100
-RATE_LIMIT_BURST=150
+RATE_LIMIT_PER_SECOND=50
+RATE_LIMIT_BURST=50
+
+# Paths
+SCRIPT_DIR="/home/geo-firewall"
+DATA_DIR="$SCRIPT_DIR/data"
+HASH_DIR="$SCRIPT_DIR/hash"
 
 # Chain/IPSet names
 CHAIN_INPUT="GEO_INPUT"
@@ -221,172 +240,216 @@ CHAIN_DOCKER="GEO_DOCKER"
 IPSET_COUNTRY="geo_country"
 IPSET_ALLOWLIST="geo_allowlist"
 
+CIDR_REGEX='^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\/(3[0-2]|[12][0-9]|[1-9]))?$'
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
 }
 
 # ==============================
-# CLEANUP FUNCTION
+# DOWNLOAD: each source → separate file, cat in fixed order → grep CIDR → raw
+#
+# Fixed order → raw content stable → hash stable
+# 99% of cron runs: download → hash match → exit, no sort/swap
 # ==============================
-cleanup_old_state() {
-    log "Cleaning old firewall state..."
-    
-    iptables -D INPUT -j "$CHAIN_INPUT" 2>/dev/null || true
-    iptables -D DOCKER-USER -j "$CHAIN_DOCKER" 2>/dev/null || true
-    
-    for chain in "$CHAIN_INPUT" "$CHAIN_DOCKER"; do
-        iptables -F "$chain" 2>/dev/null || true
-        iptables -X "$chain" 2>/dev/null || true
-    done
-    
-    for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST"; do
-        ipset destroy "$ipset_name" 2>/dev/null || true
-    done
-    
-    log "✓ Old state cleaned"
-}
+download_raw_allowlist() {
+    local raw="$DATA_DIR/allowlist.raw"
+    local tmp="$DATA_DIR/tmp_allowlist"
+    rm -rf "$tmp" && mkdir -p "$tmp"
 
-# ==============================
-# BUILD ALLOWLIST IPSET
-# ==============================
-build_allowlist() {
-    log "Building allowlist ipset..."
-    ipset create "$IPSET_ALLOWLIST" hash:net maxelem 65536
-    
-    local count=0
-    
+    # Download each source to numbered file (fixed order)
+    local i=0
     for ip in "${ALLOWLIST_IPS[@]}"; do
         [[ -z "$ip" ]] && continue
-        if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
-            ipset add "$IPSET_ALLOWLIST" "$ip" 2>/dev/null && ((count++)) || true
-        fi
+        echo "$ip" > "$tmp/$(printf '%03d' $i)_local.txt"
+        (( i++ )) || true
     done
-    
     for url in "${ALLOWLIST_URLS[@]}"; do
         [[ -z "$url" ]] && continue
-        log "Fetching: $url"
-        
-        local temp_file
-        temp_file=$(mktemp)
-        
-        if curl -sf --connect-timeout 10 --max-time 30 "$url" -o "$temp_file" 2>/dev/null; then
-            while IFS= read -r line; do
-                line=$(echo "$line" | tr -d '\r' | xargs)
-                [[ -z "$line" || "$line" =~ ^# ]] && continue
-                
-                if [[ $line =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
-                    if ipset add "$IPSET_ALLOWLIST" "$line" 2>/dev/null; then
-                        ((count++))
-                    fi
-                fi
-            done < "$temp_file"
-            log "✓ Fetched from URL"
-        else
-            log "✗ Failed to fetch: $url"
-        fi
-        
-        rm -f "$temp_file"
+        local file="$tmp/$(printf '%03d' $i)_url.txt"
+        curl -sf --connect-timeout 10 --max-time 30 "$url" > "$file" 2>/dev/null &
+        (( i++ )) || true
     done
-    
-    log "✓ Allowlist total: $count entries"
-    echo "$count"
-}
+    wait
 
-# ==============================
-# BUILD COUNTRY IPSET
-# ==============================
-build_country_ipset() {
-    log "Building country ipset..."
-    ipset create "$IPSET_COUNTRY" hash:net maxelem 131072
-    
-    local total=0
-	local sources=(
-		"https://raw.githubusercontent.com/ipverse/rir-ip/refs/heads/master/country/__CC__/ipv4-aggregated.txt"
-		"https://www.ipdeny.com/ipblocks/data/countries/__CC__.zone"
-		"https://raw.githubusercontent.com/ebrasha/cidr-ip-ranges-by-country/refs/heads/master/CIDR/__CC__-ipv4-Hackers.Zone.txt"
-	)
-    
-    for cc in "${ALLOW_COUNTRIES[@]}"; do
-        log "Processing country: $cc"
-        local cc_lower="${cc,,}"
-        local cc_upper="${cc^^}"
-        local temp_file
-        temp_file=$(mktemp)
-        
-		for source_template in "${sources[@]}"; do
-			local url=""
-			
-			if [[ "$source_template" == *"ebrasha"* ]]; then
-				url="${source_template//__CC__/$cc_upper}"
-			else
-				url="${source_template//__CC__/$cc_lower}"
-			fi
+    # cat in fixed order → grep CIDR → raw (no sort yet)
+    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" > "$raw" || true
+    rm -rf "$tmp"
 
-			if curl -sf --connect-timeout 10 --max-time 30 "$url" 2>/dev/null | \
-			   grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' >> "$temp_file"; then
-				log "✓ Fetched from: ${url##*/}"
-			else
-				log "✗ Failed: $url"
-			fi
-		done
-
-		if [[ "$cc_upper" == "VN" ]]; then
-			local vn_url="https://raw.githubusercontent.com/bibicadotnet/IPinfo-VietNam/main/vietnam.txt"
-			if curl -sf --connect-timeout 10 --max-time 30 "$vn_url" 2>/dev/null | \
-			   grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' >> "$temp_file"; then
-				log "✓ Fetched from: vietnam.txt"
-			fi
-		fi
-        
-        if [[ -s "$temp_file" ]]; then
-            local cc_count=0
-            while read -r cidr; do
-                ipset add "$IPSET_COUNTRY" "$cidr" 2>/dev/null && ((cc_count++)) || true
-            done < <(sort -u "$temp_file")
-            total=$((total + cc_count))
-            log "✓ $cc: $cc_count CIDRs"
-        else
-            log "✗ $cc: No data found"
-        fi
-        
-        rm -f "$temp_file"
-    done
-    
-    if [[ $total -eq 0 ]]; then
-        log "ERROR: No country data loaded"
+    if [[ ! -s "$raw" ]]; then
+        log "ERROR: allowlist download failed or empty"
         return 1
     fi
-    
-    log "✓ Country total: $total CIDRs"
-    echo "$total"
+}
+
+download_raw_country() {
+    local raw="$DATA_DIR/country.raw"
+    local tmp="$DATA_DIR/tmp_country"
+    rm -rf "$tmp" && mkdir -p "$tmp"
+
+    local sources=(
+        "https://raw.githubusercontent.com/ipverse/rir-ip/refs/heads/master/country/__CC__/ipv4-aggregated.txt"
+        "https://www.ipdeny.com/ipblocks/data/countries/__CC__.zone"
+        "https://raw.githubusercontent.com/ebrasha/cidr-ip-ranges-by-country/refs/heads/master/CIDR/__CC__-ipv4-Hackers.Zone.txt"
+    )
+
+    # Each country × each source → numbered file (fixed order → stable hash)
+    local i=0
+    for cc in "${ALLOW_COUNTRIES[@]}"; do
+        local cc_lower="${cc,,}"
+        local cc_upper="${cc^^}"
+
+        for source_template in "${sources[@]}"; do
+            local url=""
+            if [[ "$source_template" == *"ebrasha"* ]]; then
+                url="${source_template//__CC__/$cc_upper}"
+            else
+                url="${source_template//__CC__/$cc_lower}"
+            fi
+            local file="$tmp/$(printf '%03d' $i)_${cc}_src.txt"
+            curl -sf --connect-timeout 10 --max-time 30 "$url" > "$file" 2>/dev/null &
+            (( i++ )) || true
+        done
+
+        if [[ "$cc_upper" == "VN" ]]; then
+            local file="$tmp/$(printf '%03d' $i)_VN_special.txt"
+            curl -sf --connect-timeout 10 --max-time 30 \
+                "https://raw.githubusercontent.com/bibicadotnet/IPinfo-VietNam/main/vietnam.txt" > "$file" 2>/dev/null &
+            (( i++ )) || true
+        fi
+    done
+    wait
+
+    # cat in fixed order → grep CIDR → raw (no sort yet)
+    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" > "$raw" || true
+    rm -rf "$tmp"
+
+    if [[ ! -s "$raw" ]]; then
+        log "ERROR: country download failed or empty"
+        return 1
+    fi
 }
 
 # ==============================
-# BUILD IPTABLES CHAINS
+# UPDATE IPSET PIPELINE:
+#   download_raw (fixed order → stable content)
+#   → hash(raw) → compare saved hash
+#       ├── same + ipset intact → exit (no sort, no swap)
+#       └── diff → sort -u → atomic_swap → save hash
 # ==============================
-build_chains() {
+update_ipset() {
+    local name="$1"
+    local ipset_name="$2"
+    local ipset_type="$3"
+    local maxelem="$4"
+
+    local raw="$DATA_DIR/${name}.raw"
+    local hash_file="$HASH_DIR/${name}.raw.hash"
+    local tmp_name="${ipset_name}_tmp"
+
+    # Step 1: Download raw (fixed order per source)
+    log "Downloading $name..."
+    if [[ "$name" == "allowlist" ]]; then
+        download_raw_allowlist || return 1
+    else
+        download_raw_country || return 1
+    fi
+
+    # Step 2: Hash raw
+    local new_hash
+    new_hash=$(sha256sum "$raw" | cut -d' ' -f1)
+    local old_hash
+    old_hash=$(cat "$hash_file" 2>/dev/null || echo "")
+
+    # Step 3: Compare — if same and ipset intact, exit immediately
+    if [[ "$new_hash" == "$old_hash" ]] && ipset list "$ipset_name" >/dev/null 2>&1; then
+        log "✓ $name unchanged — skip"
+        return 0
+    fi
+
+    if [[ "$new_hash" == "$old_hash" ]]; then
+        log "⚠ $name hash match but ipset missing — forcing rebuild"
+    else
+        log "$name changed — updating..."
+    fi
+
+    # Step 4: sort -u (only runs when data actually changed)
+    local sorted
+    sorted=$(sort -u "$raw")
+    if [[ -z "$sorted" ]]; then
+        log "ERROR: sort produced empty output for $name"
+        return 1
+    fi
+
+    # Step 5: Atomic swap
+    if ! ipset list "$ipset_name" >/dev/null 2>&1; then
+        ipset create "$ipset_name" "$ipset_type" maxelem "$maxelem"
+    fi
+    ipset destroy "$tmp_name" 2>/dev/null || true
+    ipset create "$tmp_name" "$ipset_type" maxelem "$maxelem"
+    echo "$sorted" | awk '{print "add '"$tmp_name"' " $0}' | ipset restore -!
+    ipset swap "$ipset_name" "$tmp_name"
+    ipset destroy "$tmp_name"
+
+    # Step 6: Save raw hash (only after successful swap)
+    echo "$new_hash" > "$hash_file"
+
+    local count
+    count=$(ipset list -t "$ipset_name" | awk '/Number of entries:/{print $NF}')
+    log "✓ $name updated: $count entries"
+    return 2  # signal: updated
+}
+
+# ==============================
+# UPDATE ALL IPSETS
+# ==============================
+update_ipsets() {
+    local allowlist_rc=0 country_rc=0
+
+    update_ipset "allowlist" "$IPSET_ALLOWLIST" "hash:net" "65536" || allowlist_rc=$?
+    update_ipset "country"   "$IPSET_COUNTRY"   "hash:net" "131072" || country_rc=$?
+
+    if [[ $allowlist_rc -eq 0 && $country_rc -eq 0 ]]; then
+        log "✓ All data unchanged — nothing to do"
+    fi
+}
+
+# ==============================
+# BUILD CHAIN_INPUT
+#
+# Rule order:
+#  1. lo → ACCEPT
+#  2. DROP INVALID
+#  3. Docker 172.16.0.0/12 → ACCEPT
+#  4. ALLOWLIST → ACCEPT  (bypass all limits)
+#  5. CONN_LIMIT → DROP   (TCP only)
+#  6. SYN_LIMIT → DROP    (TCP --syn only)
+#  7. RATE_LIMIT → DROP   (before ESTABLISHED — DNS reuse counted here)
+#  8. ESTABLISHED,RELATED → ACCEPT
+#  9. GEOIP → ACCEPT
+# 10. DROP
+# ==============================
+build_chain_input() {
     local allowlist_count=$1
-    local country_count=$2
-    
-    log "Building iptables chains..."
-    
-    # ===== INPUT CHAIN =====
-    iptables -N "$CHAIN_INPUT"
-    
-    # 1. Base Rules
+
+    iptables -N "$CHAIN_INPUT" 2>/dev/null || true
+    iptables -F "$CHAIN_INPUT"
+
+    # 1. Loopback
     iptables -A "$CHAIN_INPUT" -i lo -j ACCEPT
-    iptables -A "$CHAIN_INPUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    
-    # Allow internal Docker traffic (Use 172.16.0.0/12 to cover all RFC1918 class B)
+
+    # 2. Drop INVALID
+    iptables -A "$CHAIN_INPUT" -m conntrack --ctstate INVALID -j DROP
+
+    # 3. Docker internal
     iptables -A "$CHAIN_INPUT" -s 172.16.0.0/12 -j ACCEPT
-    
-    # 2. PRIORITY: ALLOWLIST (Bypass Rate Limit & GeoIP)
+
+    # 4. ALLOWLIST
     if [[ $allowlist_count -gt 0 ]]; then
         if [[ "$ENABLE_PING" == "true" ]]; then
             iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
                 -m set --match-set "$IPSET_ALLOWLIST" src -j ACCEPT
         fi
-        
         for port in "${ALLOW_TCP_PORTS[@]}"; do
             iptables -A "$CHAIN_INPUT" -p tcp --dport "$port" \
                 -m set --match-set "$IPSET_ALLOWLIST" src -j ACCEPT
@@ -395,16 +458,38 @@ build_chains() {
             iptables -A "$CHAIN_INPUT" -p udp --dport "$port" \
                 -m set --match-set "$IPSET_ALLOWLIST" src -j ACCEPT
         done
-        log "✓ Allowlist rules added (Higher priority)"
+        log "✓ INPUT: allowlist rules added"
     fi
-    
-    # 3. RATE LIMITING (Only checks if NOT in Allowlist)
-    if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-        log "Adding rate limiting to INPUT chain..."
-        
+
+    # 5. CONN LIMIT (TCP only)
+    if [[ "$ENABLE_CONN_LIMIT" == "true" ]]; then
         for port in "${ALLOW_TCP_PORTS[@]}"; do
             iptables -A "$CHAIN_INPUT" -p tcp --dport "$port" \
-                -m conntrack --ctstate NEW \
+                -m connlimit --connlimit-above "$CONN_LIMIT_PER_IP" --connlimit-mask 32 \
+                -j DROP
+        done
+        log "✓ INPUT: conn limit added (max $CONN_LIMIT_PER_IP per IP)"
+    fi
+
+    # 6. SYN LIMIT (TCP --syn only)
+    if [[ "$ENABLE_SYN_LIMIT" == "true" ]]; then
+        for port in "${ALLOW_TCP_PORTS[@]}"; do
+            iptables -A "$CHAIN_INPUT" -p tcp --syn --dport "$port" \
+                -m hashlimit \
+                --hashlimit-mode srcip \
+                --hashlimit-above "${SYN_RATE_PER_SECOND}/sec" \
+                --hashlimit-burst "$SYN_BURST" \
+                --hashlimit-name "syn_${port}" \
+                --hashlimit-htable-expire 10000 \
+                -j DROP
+        done
+        log "✓ INPUT: SYN limit added (${SYN_RATE_PER_SECOND}/sec burst $SYN_BURST)"
+    fi
+
+    # 7. RATE LIMIT — before ESTABLISHED so DNS reuse is counted
+    if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
+        for port in "${ALLOW_TCP_PORTS[@]}"; do
+            iptables -A "$CHAIN_INPUT" -p tcp --dport "$port" \
                 -m hashlimit \
                 --hashlimit-mode srcip \
                 --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" \
@@ -413,10 +498,8 @@ build_chains() {
                 --hashlimit-htable-expire 10000 \
                 -j DROP
         done
-        
         for port in "${ALLOW_UDP_PORTS[@]}"; do
             iptables -A "$CHAIN_INPUT" -p udp --dport "$port" \
-                -m conntrack --ctstate NEW \
                 -m hashlimit \
                 --hashlimit-mode srcip \
                 --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" \
@@ -425,159 +508,219 @@ build_chains() {
                 --hashlimit-htable-expire 10000 \
                 -j DROP
         done
-        log "✓ Rate limiting added"
+        log "✓ INPUT: rate limit added (${RATE_LIMIT_PER_SECOND}/sec burst $RATE_LIMIT_BURST)"
     fi
-    
-    # 4. GEOIP Rules (Check Country)
+
+    # 8. ESTABLISHED/RELATED — after rate limit
+    iptables -A "$CHAIN_INPUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+    # 9. GEOIP
     if [[ "$ENABLE_PING" == "true" ]]; then
         iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
             -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
     fi
-    
     for port in "${ALLOW_TCP_PORTS[@]}"; do
         iptables -A "$CHAIN_INPUT" -p tcp --dport "$port" \
             -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
     done
-    
     for port in "${ALLOW_UDP_PORTS[@]}"; do
         iptables -A "$CHAIN_INPUT" -p udp --dport "$port" \
             -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
     done
-    
-    # 5. Drop everything else
-    iptables -A "$CHAIN_INPUT" -j DROP
-    log "✓ INPUT chain built"
 
-    # ===== DOCKER CHAIN =====
-    if command -v docker >/dev/null 2>&1; then
-        log "Building Docker chain..."
-        
-        iptables -N DOCKER-USER 2>/dev/null || true
-        iptables -N "$CHAIN_DOCKER"
-        
-        # Internal Docker (172.16.0.0/12)
-        iptables -I "$CHAIN_DOCKER" 1 -s 172.16.0.0/12 -j RETURN
-        iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-        
-        # A. Allowlist (First)
-        if [[ $allowlist_count -gt 0 ]]; then
-            for port in "${ALLOW_TCP_PORTS[@]}"; do
-                iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
-                    -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
-            done
-            for port in "${ALLOW_UDP_PORTS[@]}"; do
-                iptables -A "$CHAIN_DOCKER" -p udp --dport "$port" \
-                    -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
-            done
-        fi
-        
-        # B. Rate Limit (Second)
-        if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-            log "Adding rate limiting to DOCKER chain..."
-            for port in "${ALLOW_TCP_PORTS[@]}"; do
-                iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
-                    -m conntrack --ctstate NEW \
-                    -m hashlimit \
-                    --hashlimit-mode srcip \
-                    --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" \
-                    --hashlimit-burst "$RATE_LIMIT_BURST" \
-                    --hashlimit-name "docker_tcp_${port}_limit" \
-                    --hashlimit-htable-expire 10000 \
-                    -j DROP
-            done
-            for port in "${ALLOW_UDP_PORTS[@]}"; do
-                iptables -A "$CHAIN_DOCKER" -p udp --dport "$port" \
-                    -m conntrack --ctstate NEW \
-                    -m hashlimit \
-                    --hashlimit-mode srcip \
-                    --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" \
-                    --hashlimit-burst "$RATE_LIMIT_BURST" \
-                    --hashlimit-name "docker_udp_${port}_limit" \
-                    --hashlimit-htable-expire 10000 \
-                    -j DROP
-            done
-        fi
-        
-        # C. Country (Third)
-        for port in "${ALLOW_TCP_PORTS[@]}"; do
-            iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
-                -m set --match-set "$IPSET_COUNTRY" src -j RETURN
-        done
-        for port in "${ALLOW_UDP_PORTS[@]}"; do
-            iptables -A "$CHAIN_DOCKER" -p udp --dport "$port" \
-                -m set --match-set "$IPSET_COUNTRY" src -j RETURN
-        done
-        
-        # Drop everything else
-        iptables -A "$CHAIN_DOCKER" -j DROP
-        
-        log "✓ Docker chain built"
-    fi
+    # 10. DROP
+    iptables -A "$CHAIN_INPUT" -j DROP
+
+    log "✓ INPUT chain built"
 }
 
 # ==============================
-# ACTIVATE FIREWALL
+# BUILD CHAIN_DOCKER
+# Same order as INPUT, ACCEPT → RETURN
 # ==============================
+build_chain_docker() {
+    local allowlist_count=$1
+
+    iptables -N DOCKER-USER 2>/dev/null || true
+    iptables -N "$CHAIN_DOCKER" 2>/dev/null || true
+    iptables -F "$CHAIN_DOCKER"
+
+    # 1. Docker internal
+    iptables -A "$CHAIN_DOCKER" -s 172.16.0.0/12 -j RETURN
+
+    # 2. Drop INVALID
+    iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate INVALID -j DROP
+
+    # 3. ALLOWLIST
+    if [[ $allowlist_count -gt 0 ]]; then
+        for port in "${ALLOW_TCP_PORTS[@]}"; do
+            iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
+                -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
+        done
+        for port in "${ALLOW_UDP_PORTS[@]}"; do
+            iptables -A "$CHAIN_DOCKER" -p udp --dport "$port" \
+                -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
+        done
+    fi
+
+    # 4. CONN LIMIT
+    if [[ "$ENABLE_CONN_LIMIT" == "true" ]]; then
+        for port in "${ALLOW_TCP_PORTS[@]}"; do
+            iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
+                -m connlimit --connlimit-above "$CONN_LIMIT_PER_IP" --connlimit-mask 32 \
+                -j DROP
+        done
+    fi
+
+    # 5. SYN LIMIT
+    if [[ "$ENABLE_SYN_LIMIT" == "true" ]]; then
+        for port in "${ALLOW_TCP_PORTS[@]}"; do
+            iptables -A "$CHAIN_DOCKER" -p tcp --syn --dport "$port" \
+                -m hashlimit \
+                --hashlimit-mode srcip \
+                --hashlimit-above "${SYN_RATE_PER_SECOND}/sec" \
+                --hashlimit-burst "$SYN_BURST" \
+                --hashlimit-name "docker_syn_${port}" \
+                --hashlimit-htable-expire 10000 \
+                -j DROP
+        done
+    fi
+
+    # 6. RATE LIMIT — before ESTABLISHED
+    if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
+        for port in "${ALLOW_TCP_PORTS[@]}"; do
+            iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
+                -m hashlimit \
+                --hashlimit-mode srcip \
+                --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" \
+                --hashlimit-burst "$RATE_LIMIT_BURST" \
+                --hashlimit-name "docker_tcp_${port}_limit" \
+                --hashlimit-htable-expire 10000 \
+                -j DROP
+        done
+        for port in "${ALLOW_UDP_PORTS[@]}"; do
+            iptables -A "$CHAIN_DOCKER" -p udp --dport "$port" \
+                -m hashlimit \
+                --hashlimit-mode srcip \
+                --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" \
+                --hashlimit-burst "$RATE_LIMIT_BURST" \
+                --hashlimit-name "docker_udp_${port}_limit" \
+                --hashlimit-htable-expire 10000 \
+                -j DROP
+        done
+    fi
+
+    # 7. ESTABLISHED/RELATED — after rate limit
+    iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+    # 8. GEOIP
+    for port in "${ALLOW_TCP_PORTS[@]}"; do
+        iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
+            -m set --match-set "$IPSET_COUNTRY" src -j RETURN
+    done
+    for port in "${ALLOW_UDP_PORTS[@]}"; do
+        iptables -A "$CHAIN_DOCKER" -p udp --dport "$port" \
+            -m set --match-set "$IPSET_COUNTRY" src -j RETURN
+    done
+
+    # 9. DROP
+    iptables -A "$CHAIN_DOCKER" -j DROP
+
+    log "✓ Docker chain built"
+}
+
 activate_firewall() {
-    log "Activating firewall..."
-    
-    iptables -I INPUT 1 -j "$CHAIN_INPUT"
-    
+    if ! iptables -C INPUT -j "$CHAIN_INPUT" 2>/dev/null; then
+        iptables -I INPUT 1 -j "$CHAIN_INPUT"
+    fi
+
     if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
-        iptables -I DOCKER-USER 1 -j "$CHAIN_DOCKER" 2>/dev/null || true
+        if ! iptables -C DOCKER-USER -j "$CHAIN_DOCKER" 2>/dev/null; then
+            iptables -I DOCKER-USER 1 -j "$CHAIN_DOCKER" 2>/dev/null || true
+        fi
         log "✓ Docker protection enabled"
     fi
-    
+
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
-    
     if command -v netfilter-persistent >/dev/null; then
         netfilter-persistent save 2>/dev/null || true
     fi
-    
     log "✓ Rules saved"
 }
 
 # ==============================
-# MAIN EXECUTION
+# MAIN
 # ==============================
 main() {
     log "=========================================="
-    log "GeoIP Firewall Activation"
+    log "GeoIP Firewall"
     log "=========================================="
-    
-    cleanup_old_state
-    
-    allowlist_count=$(build_allowlist)
-    country_count=$(build_country_ipset) || exit 1
-    
-    build_chains "$allowlist_count" "$country_count"
-    activate_firewall
-    
-    log "=========================================="
-    log "✓ FIREWALL ACTIVE"
-    log "  Countries: ${ALLOW_COUNTRIES[*]}"
-    log "  TCP Ports: ${ALLOW_TCP_PORTS[*]}"
-    log "  UDP Ports: ${ALLOW_UDP_PORTS[*]}"
-    if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-        log "  Rate Limit: ${RATE_LIMIT_PER_SECOND}/sec (burst: ${RATE_LIMIT_BURST})"
-        log "  Status: Enabled (Applied AFTER Allowlist)"
+
+    local first_run=false
+
+    if ! iptables -L "$CHAIN_INPUT" -n >/dev/null 2>&1; then
+        first_run=true
+        log "First run — initializing"
+        ipset create "$IPSET_ALLOWLIST" hash:net maxelem 65536 2>/dev/null || true
+        ipset create "$IPSET_COUNTRY" hash:net maxelem 131072 2>/dev/null || true
     fi
-    log "  Allowlist: $allowlist_count entries"
-    log "  Country IPs: $country_count CIDRs"
-    log "=========================================="
+
+    update_ipsets
+
+    if [[ "$first_run" == true ]]; then
+        local allowlist_count country_count
+        allowlist_count=$(ipset list -t "$IPSET_ALLOWLIST" | awk '/Number of entries:/{print $NF}')
+        country_count=$(ipset list -t "$IPSET_COUNTRY" | awk '/Number of entries:/{print $NF}')
+
+        # Guard: country rỗng → không build → tránh lockout
+        if [[ "$country_count" -eq 0 ]]; then
+            log "ERROR: country ipset is empty — aborting to prevent lockout"
+            log "       Check network connectivity and try again"
+            exit 1
+        fi
+
+        build_chain_input "$allowlist_count"
+
+        if command -v docker >/dev/null 2>&1; then
+            build_chain_docker "$allowlist_count"
+        fi
+
+        activate_firewall
+
+        log "=========================================="
+        log "✓ FIREWALL ACTIVE"
+        log "  Countries:   ${ALLOW_COUNTRIES[*]}"
+        log "  TCP Ports:   ${ALLOW_TCP_PORTS[*]}"
+        log "  UDP Ports:   ${ALLOW_UDP_PORTS[*]}"
+        log "  Allowlist:   $allowlist_count entries"
+        log "  Country IPs: $country_count CIDRs"
+        [[ "$ENABLE_CONN_LIMIT" == "true" ]] && log "  Conn Limit:  $CONN_LIMIT_PER_IP conns/IP"
+        [[ "$ENABLE_SYN_LIMIT" == "true" ]]  && log "  SYN Limit:   ${SYN_RATE_PER_SECOND}/sec (burst $SYN_BURST)"
+        [[ "$ENABLE_RATE_LIMIT" == "true" ]] && log "  Rate Limit:  ${RATE_LIMIT_PER_SECOND}/sec (burst $RATE_LIMIT_BURST)"
+        log "=========================================="
+    else
+        log "✓ Done"
+    fi
 }
 
 main
 EOF_MAIN
 
-# Inject configuration into firewall script
+# ==============================
+# INJECT CONFIGURATION
+# ==============================
 sed -i "/^ALLOW_COUNTRIES=()/ c\ALLOW_COUNTRIES=($(printf '"%s" ' "${ALLOW_COUNTRIES[@]}") )" "$FIREWALL_SCRIPT"
 sed -i "/^ALLOW_TCP_PORTS=()/ c\ALLOW_TCP_PORTS=($(printf '"%s" ' "${ALLOW_TCP_PORTS[@]}") )" "$FIREWALL_SCRIPT"
 sed -i "/^ALLOW_UDP_PORTS=()/ c\ALLOW_UDP_PORTS=($(printf '"%s" ' "${ALLOW_UDP_PORTS[@]}") )" "$FIREWALL_SCRIPT"
 sed -i "/^ALLOWLIST_URLS=()/ c\ALLOWLIST_URLS=($(printf '"%s" ' "${ALLOWLIST_URLS[@]}") )" "$FIREWALL_SCRIPT"
 sed -i "/^ALLOWLIST_IPS=()/ c\ALLOWLIST_IPS=($(printf '"%s" ' "${ALLOWLIST_IPS[@]}") )" "$FIREWALL_SCRIPT"
 sed -i "/^ENABLE_PING=/ c\ENABLE_PING=\"$ENABLE_PING\"" "$FIREWALL_SCRIPT"
+sed -i "/^ENABLE_CONN_LIMIT=/ c\ENABLE_CONN_LIMIT=\"$ENABLE_CONN_LIMIT\"" "$FIREWALL_SCRIPT"
+sed -i "/^CONN_LIMIT_PER_IP=/ c\CONN_LIMIT_PER_IP=\"$CONN_LIMIT_PER_IP\"" "$FIREWALL_SCRIPT"
+sed -i "/^ENABLE_SYN_LIMIT=/ c\ENABLE_SYN_LIMIT=\"$ENABLE_SYN_LIMIT\"" "$FIREWALL_SCRIPT"
+sed -i "/^SYN_RATE_PER_SECOND=/ c\SYN_RATE_PER_SECOND=\"$SYN_RATE_PER_SECOND\"" "$FIREWALL_SCRIPT"
+sed -i "/^SYN_BURST=/ c\SYN_BURST=\"$SYN_BURST\"" "$FIREWALL_SCRIPT"
 sed -i "/^ENABLE_RATE_LIMIT=/ c\ENABLE_RATE_LIMIT=\"$ENABLE_RATE_LIMIT\"" "$FIREWALL_SCRIPT"
 sed -i "/^RATE_LIMIT_PER_SECOND=/ c\RATE_LIMIT_PER_SECOND=\"$RATE_LIMIT_PER_SECOND\"" "$FIREWALL_SCRIPT"
 sed -i "/^RATE_LIMIT_BURST=/ c\RATE_LIMIT_BURST=\"$RATE_LIMIT_BURST\"" "$FIREWALL_SCRIPT"
@@ -615,23 +758,23 @@ systemctl enable geo-firewall.service
 # ==============================
 log "Setting up cron job..."
 
-(crontab -l 2>/dev/null || true; echo "30 2 * * * $FIREWALL_SCRIPT >/dev/null 2>&1") | crontab -
+(crontab -l 2>/dev/null || true; echo "30 2 * * * /bin/bash $FIREWALL_SCRIPT >/dev/null 2>&1") | crontab -
 
 # ==============================
-# APPLY FIREWALL NOW
+# FIRST RUN
 # ==============================
 log "Applying firewall..."
 
 if "$FIREWALL_SCRIPT"; then
     log "✓ Setup complete"
 else
-    log "✗ Firewall failed - running emergency reset"
+    log "✗ Firewall failed — running emergency reset"
     "$RESET_SCRIPT"
     exit 1
 fi
 
 # ==============================
-# FINAL SUMMARY (DYNAMIC)
+# FINAL SUMMARY
 # ==============================
 echo ""
 echo "╔════════════════════════════════════════╗"
@@ -643,50 +786,43 @@ echo "  • Countries: ${ALLOW_COUNTRIES[*]}"
 echo "  • TCP ports: ${ALLOW_TCP_PORTS[*]}"
 echo "  • UDP ports: ${ALLOW_UDP_PORTS[*]}"
 echo "  • Allowlist: ${#ALLOWLIST_URLS[@]} URLs, ${#ALLOWLIST_IPS[@]} IPs"
-
-if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-    echo "  • Rate Limit: ${RATE_LIMIT_PER_SECOND} conn/sec per IP"
-    echo "  • Logic: Allowlist > Rate Limit > GeoIP > Drop"
-else
-    echo "  • Rate Limit: Disabled"
-fi
-
 echo ""
-echo "Docker Support:"
-echo "  • Internal Network: 172.16.0.0/12 (Allowed)"
-echo "  • Protected Chain: DOCKER-USER"
-
+echo "Rule Order:"
+echo "  1. lo → ACCEPT"
+echo "  2. DROP INVALID"
+echo "  3. Docker 172.16.0.0/12 → ACCEPT"
+echo "  4. Allowlist → ACCEPT (bypass all)"
+[[ "$ENABLE_CONN_LIMIT" == "true" ]] && echo "  5. Conn Limit: max $CONN_LIMIT_PER_IP/IP → DROP"
+[[ "$ENABLE_SYN_LIMIT" == "true" ]]  && echo "  6. SYN Limit: ${SYN_RATE_PER_SECOND}/sec (burst $SYN_BURST) → DROP"
+[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  7. Rate Limit: ${RATE_LIMIT_PER_SECOND}/sec (burst $RATE_LIMIT_BURST) → DROP"
+echo "  8. ESTABLISHED/RELATED → ACCEPT"
+echo "  9. GeoIP → ACCEPT"
+echo " 10. DROP"
 echo ""
-echo "Management Commands:"
+echo "Kernel Hardening: /etc/sysctl.d/99-geo-firewall.conf"
+echo ""
+echo "Management:"
 echo "  • Status:  systemctl status geo-firewall"
-echo "  • Restart: systemctl restart geo-firewall"
 echo "  • Update:  $FIREWALL_SCRIPT"
 echo "  • Reset:   $RESET_SCRIPT"
-
 echo ""
-echo "Rate Limit Stats (Run command to check):"
-if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-    has_docker=false
-    if command -v docker >/dev/null 2>&1; then has_docker=true; fi
-
-    echo "  [TCP PORTS]"
-    for port in "${ALLOW_TCP_PORTS[@]}"; do
-        echo "    • Port $port: cat /proc/net/ipt_hashlimit/tcp_${port}_limit"
-        if [ "$has_docker" = true ]; then
-            echo "      (Docker): cat /proc/net/ipt_hashlimit/docker_tcp_${port}_limit"
-        fi
-    done
-
-    echo "  [UDP PORTS]"
-    for port in "${ALLOW_UDP_PORTS[@]}"; do
-        echo "    • Port $port: cat /proc/net/ipt_hashlimit/udp_${port}_limit"
-        if [ "$has_docker" = true ]; then
-            echo "      (Docker): cat /proc/net/ipt_hashlimit/docker_udp_${port}_limit"
-        fi
-    done
-else
-    echo "  (Rate limiting is disabled)"
-fi
+echo "Rate Limit Stats:"
+has_docker=false
+command -v docker >/dev/null 2>&1 && has_docker=true
+for port in "${ALLOW_TCP_PORTS[@]}"; do
+    [[ "$ENABLE_SYN_LIMIT" == "true" ]]  && echo "  • SYN  TCP $port: cat /proc/net/ipt_hashlimit/syn_${port}"
+    [[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  • PPS  TCP $port: cat /proc/net/ipt_hashlimit/tcp_${port}_limit"
+    if [[ "$has_docker" == "true" ]]; then
+        [[ "$ENABLE_SYN_LIMIT" == "true" ]]  && echo "    (Docker SYN): cat /proc/net/ipt_hashlimit/docker_syn_${port}"
+        [[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "    (Docker PPS): cat /proc/net/ipt_hashlimit/docker_tcp_${port}_limit"
+    fi
+done
+for port in "${ALLOW_UDP_PORTS[@]}"; do
+    [[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  • PPS  UDP $port: cat /proc/net/ipt_hashlimit/udp_${port}_limit"
+    if [[ "$has_docker" == "true" ]]; then
+        [[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "    (Docker PPS): cat /proc/net/ipt_hashlimit/docker_udp_${port}_limit"
+    fi
+done
 echo ""
 
 exit 0
