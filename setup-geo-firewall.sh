@@ -1,8 +1,8 @@
 #!/bin/bash
 # setup-geo-firewall.sh
 # GeoIP-based firewall with Docker support
-# DNS protection: RATE_LIMIT only (packets/sec per IP, before ESTABLISHED)
-# UDP rate limit in raw table (before conntrack) for lower CPU
+# TCP: filter table hashlimit DROP (after allowlist, before ESTABLISHED — counts all packets)
+# UDP: raw table hashlimit DROP + NOTRACK → bypass conntrack → lower CPU for DoQ/DoH3
 
 PUBLIC_IP=$(curl -s https://api.ipify.org)
 
@@ -17,8 +17,8 @@ ALLOW_UDP_PORTS=("53" "443" "853")
 ENABLE_PING=false
 
 # RATE LIMITING
-# TCP: filter table (after conntrack)
-# UDP: raw table (before conntrack) → lower CPU for DoH3/DoQ flood
+# TCP: filter table (before ESTABLISHED) → hashlimit DROP → counts all packets incl. persistent DoT/DoH
+# UDP: raw table (before conntrack) → hashlimit DROP + NOTRACK
 ENABLE_RATE_LIMIT=true
 RATE_LIMIT_PER_SECOND=100
 
@@ -90,8 +90,8 @@ cleanup_all() {
         iptables -X "$chain" 2>/dev/null || true
     done
 
-    # Clean raw table UDP rules
     iptables -t raw -F PREROUTING 2>/dev/null || true
+    iptables -t raw -F OUTPUT 2>/dev/null || true
 
     for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
         ipset destroy "$ipset_name" 2>/dev/null || true
@@ -168,6 +168,7 @@ done
 echo "✓ Firewall chains removed"
 
 iptables -t raw -F PREROUTING 2>/dev/null || true
+iptables -t raw -F OUTPUT 2>/dev/null || true
 echo "✓ Raw table cleared"
 
 for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
@@ -233,6 +234,7 @@ CHAIN_DOCKER="GEO_DOCKER"
 IPSET_COUNTRY="geo_country"
 IPSET_ALLOWLIST="geo_allowlist"
 
+# Valid IPv4 CIDR: octets 0-255, prefix 1-32 (reject /0)
 CIDR_REGEX='^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\/(3[0-2]|[12][0-9]|[1-9]))?$'
 
 log() {
@@ -240,8 +242,8 @@ log() {
 }
 
 # ==============================
-# DOWNLOAD: each source → separate file, cat in fixed order → grep CIDR → raw
-# Fixed order → stable hash → 99% cron runs exit after hash check
+# DOWNLOAD
+# Fixed order per source → stable content → stable hash → skip on cron if unchanged
 # ==============================
 download_raw_allowlist() {
     local raw="$DATA_DIR/allowlist.raw"
@@ -262,7 +264,7 @@ download_raw_allowlist() {
     done
     wait
 
-    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" > "$raw" || true
+    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$raw" || true
     rm -rf "$tmp"
 
     if [[ ! -s "$raw" ]]; then
@@ -306,7 +308,7 @@ download_raw_country() {
     done
     wait
 
-    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" > "$raw" || true
+    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$raw" || true
     rm -rf "$tmp"
 
     if [[ ! -s "$raw" ]]; then
@@ -316,11 +318,7 @@ download_raw_country() {
 }
 
 # ==============================
-# UPDATE IPSET PIPELINE:
-#   download_raw (fixed order → stable content)
-#   → hash(raw) → compare saved hash
-#       ├── same + ipset intact → skip (no sort, no swap)
-#       └── diff → sort -u → atomic_swap → save hash
+# UPDATE IPSET
 # ==============================
 update_ipset() {
     local name="$1"
@@ -355,19 +353,13 @@ update_ipset() {
         log "$name changed — updating..."
     fi
 
-    local sorted
-    sorted=$(sort -u "$raw")
-    if [[ -z "$sorted" ]]; then
-        log "ERROR: sort produced empty output for $name"
-        return 1
-    fi
-
     if ! ipset list "$ipset_name" >/dev/null 2>&1; then
         ipset create "$ipset_name" "$ipset_type" maxelem "$maxelem"
     fi
+
     ipset destroy "$tmp_name" 2>/dev/null || true
     ipset create "$tmp_name" "$ipset_type" maxelem "$maxelem"
-    echo "$sorted" | awk '{print "add '"$tmp_name"' " $0}' | ipset restore -!
+    awk '{print "add '"$tmp_name"' " $0}' "$raw" | ipset restore -!
     ipset swap "$ipset_name" "$tmp_name"
     ipset destroy "$tmp_name"
 
@@ -391,20 +383,21 @@ update_ipsets() {
 }
 
 # ==============================
-# BUILD RAW TABLE (UDP only)
-# Drop UDP before conntrack → lower CPU for DoH3/DoQ flood
-# Allowlist bypass via ipset check
+# BUILD RAW TABLE
+# UDP only: allowlist bypass → hashlimit DROP → NOTRACK valid packets
+# OUTPUT: NOTRACK UDP reply packets
 # ==============================
-build_raw_udp() {
+build_raw_table() {
     iptables -t raw -F PREROUTING
+    iptables -t raw -F OUTPUT
 
-    if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-        for port in "${ALLOW_UDP_PORTS[@]}"; do
-            # Allowlist bypass
-            iptables -t raw -A PREROUTING -p udp --dport "$port" \
-                -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
+    for port in "${ALLOW_UDP_PORTS[@]}"; do
+        # 1. Allowlist bypass
+        iptables -t raw -A PREROUTING -p udp --dport "$port" \
+            -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
 
-            # Rate limit — drop before conntrack
+        if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
+            # 2. Rate limit — DROP flood before conntrack
             iptables -t raw -A PREROUTING -p udp --dport "$port" \
                 -m hashlimit \
                 --hashlimit-mode srcip \
@@ -413,23 +406,31 @@ build_raw_udp() {
                 --hashlimit-name "raw_udp_${port}_limit" \
                 --hashlimit-htable-expire 10000 \
                 -j DROP
-        done
-        log "✓ RAW: UDP rate limit added (${RATE_LIMIT_PER_SECOND}/sec)"
-    fi
+        fi
+
+        # 3. NOTRACK valid UDP — no conntrack entries → lower CPU for DoQ/DoH3
+        iptables -t raw -A PREROUTING -p udp --dport "$port" -j CT --notrack
+
+        # 4. NOTRACK reply — reply packets also bypass conntrack
+        iptables -t raw -A OUTPUT -p udp --sport "$port" -j CT --notrack
+    done
+
+    log "✓ RAW table built (UDP: hashlimit DROP + NOTRACK)"
 }
 
 # ==============================
-# BUILD CHAIN_INPUT (TCP only for rate limit)
+# BUILD CHAIN_INPUT
 #
 # Rule order:
 #  1. lo → ACCEPT
 #  2. DROP INVALID
 #  3. Docker 172.16.0.0/12 → ACCEPT
-#  4. ALLOWLIST → ACCEPT  (bypass rate limit)
-#  5. RATE_LIMIT TCP → DROP  (before ESTABLISHED)
-#  6. ESTABLISHED,RELATED → ACCEPT
-#  7. GEOIP → ACCEPT
-#  8. DROP
+#  4. UNTRACKED + GeoIP → ACCEPT    (UDP NOTRACKed from raw table)
+#  5. ALLOWLIST → ACCEPT            (bypass rate limit)
+#  6. TCP rate limit → DROP         (before ESTABLISHED — counts ALL packets incl. persistent DoT/DoH)
+#  7. ESTABLISHED,RELATED → ACCEPT  (TCP — after rate limit)
+#  8. GEOIP TCP → ACCEPT            (new TCP connections)
+#  9. DROP
 # ==============================
 build_chain_input() {
     local allowlist_count=$1
@@ -446,7 +447,19 @@ build_chain_input() {
     # 3. Docker internal
     iptables -A "$CHAIN_INPUT" -s 172.16.0.0/12 -j ACCEPT
 
-    # 4. ALLOWLIST
+    # 4. UNTRACKED UDP + GeoIP — handle NOTRACKed UDP from raw table
+    if [[ "$ENABLE_PING" == "true" ]]; then
+        iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
+            -m conntrack --ctstate UNTRACKED \
+            -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
+    fi
+    for port in "${ALLOW_UDP_PORTS[@]}"; do
+        iptables -A "$CHAIN_INPUT" -p udp --dport "$port" \
+            -m conntrack --ctstate UNTRACKED \
+            -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
+    done
+
+    # 5. ALLOWLIST — bypass rate limit entirely
     if [[ $allowlist_count -gt 0 ]]; then
         if [[ "$ENABLE_PING" == "true" ]]; then
             iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
@@ -463,7 +476,8 @@ build_chain_input() {
         log "✓ INPUT: allowlist rules added"
     fi
 
-    # 5. RATE LIMIT TCP — before ESTABLISHED
+    # 6. TCP rate limit — BEFORE ESTABLISHED to count all packets incl. persistent connections
+    # No --ctstate NEW: DoT/DoH reuse connections, must count all packets not just new
     if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
         for port in "${ALLOW_TCP_PORTS[@]}"; do
             iptables -A "$CHAIN_INPUT" -p tcp --dport "$port" \
@@ -475,27 +489,19 @@ build_chain_input() {
                 --hashlimit-htable-expire 10000 \
                 -j DROP
         done
-        log "✓ INPUT: TCP rate limit added (${RATE_LIMIT_PER_SECOND}/sec)"
+        log "✓ INPUT: TCP rate limit added (${RATE_LIMIT_PER_SECOND}/sec, before ESTABLISHED)"
     fi
 
-    # 6. ESTABLISHED/RELATED — after rate limit
+    # 7. ESTABLISHED/RELATED — after rate limit (TCP only meaningful here)
     iptables -A "$CHAIN_INPUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-    # 7. GEOIP
-    if [[ "$ENABLE_PING" == "true" ]]; then
-        iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
-            -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
-    fi
+    # 8. GEOIP TCP — new connections
     for port in "${ALLOW_TCP_PORTS[@]}"; do
         iptables -A "$CHAIN_INPUT" -p tcp --dport "$port" \
             -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
     done
-    for port in "${ALLOW_UDP_PORTS[@]}"; do
-        iptables -A "$CHAIN_INPUT" -p udp --dport "$port" \
-            -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
-    done
 
-    # 8. DROP
+    # 9. DROP
     iptables -A "$CHAIN_INPUT" -j DROP
 
     log "✓ INPUT chain built"
@@ -503,8 +509,7 @@ build_chain_input() {
 
 # ==============================
 # BUILD CHAIN_DOCKER
-# Same order as INPUT, ACCEPT → RETURN
-# UDP rate limit handled in raw table
+# Same order as INPUT
 # ==============================
 build_chain_docker() {
     local allowlist_count=$1
@@ -519,7 +524,14 @@ build_chain_docker() {
     # 2. Drop INVALID
     iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate INVALID -j DROP
 
-    # 3. ALLOWLIST
+    # 3. UNTRACKED UDP + GeoIP
+    for port in "${ALLOW_UDP_PORTS[@]}"; do
+        iptables -A "$CHAIN_DOCKER" -p udp --dport "$port" \
+            -m conntrack --ctstate UNTRACKED \
+            -m set --match-set "$IPSET_COUNTRY" src -j RETURN
+    done
+
+    # 4. ALLOWLIST
     if [[ $allowlist_count -gt 0 ]]; then
         for port in "${ALLOW_TCP_PORTS[@]}"; do
             iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
@@ -531,7 +543,7 @@ build_chain_docker() {
         done
     fi
 
-    # 4. RATE LIMIT TCP — before ESTABLISHED
+    # 5. TCP rate limit — before ESTABLISHED
     if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
         for port in "${ALLOW_TCP_PORTS[@]}"; do
             iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
@@ -545,20 +557,16 @@ build_chain_docker() {
         done
     fi
 
-    # 5. ESTABLISHED/RELATED — after rate limit
+    # 6. ESTABLISHED/RELATED — after rate limit
     iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
-    # 6. GEOIP
+    # 7. GEOIP TCP
     for port in "${ALLOW_TCP_PORTS[@]}"; do
         iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
             -m set --match-set "$IPSET_COUNTRY" src -j RETURN
     done
-    for port in "${ALLOW_UDP_PORTS[@]}"; do
-        iptables -A "$CHAIN_DOCKER" -p udp --dport "$port" \
-            -m set --match-set "$IPSET_COUNTRY" src -j RETURN
-    done
 
-    # 7. DROP
+    # 8. DROP
     iptables -A "$CHAIN_DOCKER" -j DROP
 
     log "✓ Docker chain built"
@@ -597,6 +605,10 @@ main() {
     if ! iptables -L "$CHAIN_INPUT" -n >/dev/null 2>&1; then
         first_run=true
         log "First run — initializing"
+
+        # Delete hashes to force rebuild after reboot
+        rm -f "$HASH_DIR"/*.hash
+
         ipset create "$IPSET_ALLOWLIST" hash:net maxelem 65536 2>/dev/null || true
         ipset create "$IPSET_COUNTRY" hash:net maxelem 131072 2>/dev/null || true
     fi
@@ -614,7 +626,7 @@ main() {
             exit 1
         fi
 
-        build_raw_udp
+        build_raw_table
         build_chain_input "$allowlist_count"
 
         if command -v docker >/dev/null 2>&1; then
@@ -630,7 +642,7 @@ main() {
         log "  UDP Ports:   ${ALLOW_UDP_PORTS[*]}"
         log "  Allowlist:   $allowlist_count entries"
         log "  Country IPs: $country_count CIDRs"
-        [[ "$ENABLE_RATE_LIMIT" == "true" ]] && log "  Rate Limit:  ${RATE_LIMIT_PER_SECOND}/sec (TCP: filter, UDP: raw)"
+        [[ "$ENABLE_RATE_LIMIT" == "true" ]] && log "  Rate Limit:  ${RATE_LIMIT_PER_SECOND}/sec (TCP: filter before ESTABLISHED, UDP: raw+NOTRACK)"
         log "=========================================="
     else
         log "✓ Done"
@@ -715,19 +727,24 @@ echo "  • UDP ports: ${ALLOW_UDP_PORTS[*]}"
 echo "  • Allowlist: ${#ALLOWLIST_URLS[@]} URLs, ${#ALLOWLIST_IPS[@]} IPs"
 echo ""
 echo "Rule Order:"
-echo "  [raw/PREROUTING - UDP only, before conntrack]"
+echo "  [raw/PREROUTING — UDP only]"
 echo "  1. Allowlist → RETURN"
-[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  2. Rate Limit UDP: ${RATE_LIMIT_PER_SECOND}/sec → DROP"
+[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  2. hashlimit UDP ${RATE_LIMIT_PER_SECOND}/sec → DROP"
+echo "  3. CT --notrack UDP"
 echo ""
-echo "  [filter/INPUT - TCP]"
+echo "  [raw/OUTPUT — UDP only]"
+echo "  1. CT --notrack UDP sport"
+echo ""
+echo "  [filter/INPUT]"
 echo "  1. lo → ACCEPT"
 echo "  2. DROP INVALID"
 echo "  3. Docker 172.16.0.0/12 → ACCEPT"
-echo "  4. Allowlist → ACCEPT"
-[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  5. Rate Limit TCP: ${RATE_LIMIT_PER_SECOND}/sec → DROP"
-echo "  6. ESTABLISHED/RELATED → ACCEPT"
-echo "  7. GeoIP → ACCEPT"
-echo "  8. DROP"
+echo "  4. UNTRACKED + GeoIP → ACCEPT (UDP)"
+echo "  5. Allowlist → ACCEPT"
+[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  6. hashlimit TCP ${RATE_LIMIT_PER_SECOND}/sec → DROP  (before ESTABLISHED)"
+echo "  7. ESTABLISHED/RELATED → ACCEPT"
+echo "  8. GeoIP → ACCEPT (TCP)"
+echo "  9. DROP"
 echo ""
 echo "Kernel Hardening: /etc/sysctl.d/99-geo-firewall.conf"
 echo ""
@@ -737,12 +754,14 @@ echo "  • Update:  $FIREWALL_SCRIPT"
 echo "  • Reset:   $RESET_SCRIPT"
 echo ""
 echo "Rate Limit Stats:"
-for port in "${ALLOW_TCP_PORTS[@]}"; do
-    [[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  • TCP $port: cat /proc/net/ipt_hashlimit/tcp_${port}_limit"
-done
-for port in "${ALLOW_UDP_PORTS[@]}"; do
-    [[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  • UDP $port: cat /proc/net/ipt_hashlimit/raw_udp_${port}_limit"
-done
+if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
+    for port in "${ALLOW_UDP_PORTS[@]}"; do
+        echo "  • UDP $port: cat /proc/net/ipt_hashlimit/raw_udp_${port}_limit"
+    done
+    for port in "${ALLOW_TCP_PORTS[@]}"; do
+        echo "  • TCP $port: cat /proc/net/ipt_hashlimit/tcp_${port}_limit"
+    done
+fi
 echo ""
 
 exit 0
