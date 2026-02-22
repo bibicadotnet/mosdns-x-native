@@ -7,7 +7,7 @@
 # LOGGING & DIAGNOSTICS
 # ============================================================================
 log:
-  level: info	# Options: debug, info, error, warn
+  level: error	# Options: debug, info, error, warn
   file: "log/mosdns.log"
 
 api:
@@ -249,7 +249,7 @@ plugins:
       lazy_cache_reply_ttl: 5
       cleaner_interval: 68
 
-# ==========================================================================
+  # ==========================================================================
   # UPSTREAM RESOLVERS
   # ==========================================================================
   
@@ -338,7 +338,7 @@ plugins:
         # PHASE 4: Query Logging & Routing
         # ====================================================================
         
-        - _query_summary
+        #- _query_summary
 
         # Route: Google domains → Google DNS (with conditional ECS)
         - if: match_google_domain
