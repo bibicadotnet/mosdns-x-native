@@ -1,8 +1,8 @@
 #!/bin/bash
 # setup-geo-firewall.sh
 # GeoIP-based firewall with Docker support
-# TCP: filter table hashlimit DROP (after allowlist, before ESTABLISHED — counts all packets)
-# UDP: raw table hashlimit DROP + NOTRACK → bypass conntrack → lower CPU for DoQ/DoH3
+# TCP: raw table hashlimit DROP (Zero CPU Peak Strategy)
+# UDP: raw table hashlimit DROP + NOTRACK (Zero CPU Peak Strategy)
 
 PUBLIC_IP=$(curl -s https://api.ipify.org)
 
@@ -17,12 +17,11 @@ ALLOW_UDP_PORTS=("53" "443" "853")
 ENABLE_PING=false
 
 # RATE LIMITING
-# TCP: filter table (before ESTABLISHED) → hashlimit DROP → counts all packets incl. persistent DoT/DoH
-# UDP: raw table (before conntrack) → hashlimit DROP + NOTRACK
+# ALL PORTS: raw table (PREROUTING) → Fast Path Penalty (100 -> 10)
 ENABLE_RATE_LIMIT=true
-RATE_LIMIT_PER_SECOND=100   # PPS threshold to trigger penalty
+RATE_LIMIT_PER_SECOND=150   # PPS threshold to trigger penalty
 THROTTLE_RATE=5            # PPS limit during penalty
-PENALTY_TIME=10              # Seconds to maintain penalty (xt_recent)
+PENALTY_TIME=5              # Seconds to maintain penalty (xt_recent)
 
 # ALLOWLIST CONFIGURATION
 ALLOWLIST_URLS=(
@@ -403,6 +402,7 @@ update_ipsets() {
 # ==============================
 # RATE LIMIT HELPER (xt_recent + hashlimit)
 # "If rate > 100/sec, then limit to 10/sec"
+# Optimized for high-throughput UDP: Penalized IPs are handled FIRST.
 # ==============================
 add_rate_limit() {
     local table="$1"   # "raw" or "filter"
@@ -417,28 +417,32 @@ add_rate_limit() {
     local sub="RL_${prefix}"
     iptables $t_flag -N "$sub" 2>/dev/null || iptables $t_flag -F "$sub"
 
-    # 1. MARK: If IP crosses 100/sec, mark as flooder (refreshes every packet > 100)
-    iptables $t_flag -A "$sub" \
-        -m hashlimit \
-        --hashlimit-mode srcip \
-        --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" \
-        --hashlimit-burst "${RATE_LIMIT_PER_SECOND}" \
-        --hashlimit-name "${prefix}_det" \
-        -m recent --set --name "FLOOD_${prefix}"
-
-    # 2. PENALTY: If marked within last PENALTY_TIME, allow only up to THROTTLE_RATE/sec (10)
+    # 1. PENALTY CHECK: If already flagged in last 5s, enforce the 10/sec cap immediately.
+    # This is the "fast path" for flooders - saves CPU by skipping the 100/sec detector.
     iptables $t_flag -A "$sub" \
         -m recent --rcheck --seconds "${PENALTY_TIME}" --name "FLOOD_${prefix}" \
         -m hashlimit \
         --hashlimit-mode srcip \
         --hashlimit-upto "${THROTTLE_RATE}/sec" \
-        --hashlimit-burst "${THROTTLE_RATE}" \
+        --hashlimit-burst 5 \
         --hashlimit-name "${prefix}_pen" \
         -j RETURN
 
-    # 3. DROP: If still marked as flooder (over the 10/sec bonus)
+    # 2. PENALTY DROP: If already flagged and exceeded the 10/sec quota.
     iptables $t_flag -A "$sub" \
         -m recent --rcheck --seconds "${PENALTY_TIME}" --name "FLOOD_${prefix}" \
+        -j DROP
+
+    # 3. DETECTION: If NOT flagged yet, check if rate > 100/sec.
+    # If yes: mark as flooder and DROP the triggering packet.
+    # burst=5 ensures near-instant penalty (trigger after only 5 excess packets)
+    iptables $t_flag -A "$sub" \
+        -m hashlimit \
+        --hashlimit-mode srcip \
+        --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" \
+        --hashlimit-burst 5 \
+        --hashlimit-name "${prefix}_det" \
+        -m recent --set --name "FLOOD_${prefix}" \
         -j DROP
 
     # 4. NORMAL: Full pass (Return to parent chain)
@@ -499,11 +503,10 @@ build_raw_table() {
 #  2. DROP INVALID
 #  3. Docker 172.16.0.0/12 → ACCEPT
 #  4. UNTRACKED + GeoIP → ACCEPT    (UDP NOTRACKed from raw table)
-#  5. ALLOWLIST → ACCEPT            (bypass rate limit)
-#  6. TCP rate limit → DROP         (before ESTABLISHED — counts ALL packets incl. persistent DoT/DoH)
-#  7. ESTABLISHED,RELATED → ACCEPT  (TCP — after rate limit)
-#  8. GEOIP TCP → ACCEPT            (new TCP connections)
-#  9. DROP
+#  5. ALLOWLIST → ACCEPT
+#  6. ESTABLISHED,RELATED → ACCEPT
+#  7. GEOIP TCP → ACCEPT
+#  8. DROP
 # ==============================
 build_chain_input() {
     local allowlist_count=$1
@@ -549,7 +552,6 @@ build_chain_input() {
         log "✓ INPUT: allowlist rules added"
     fi
 
-    # 6. TCP rate limit — REPLACED: now handled in RAW/PREROUTING
 
     # 7. ESTABLISHED/RELATED — after rate limit (TCP only meaningful here)
     iptables -A "$CHAIN_INPUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
@@ -602,7 +604,6 @@ build_chain_docker() {
         done
     fi
 
-    # 5. TCP rate limit — REPLACED: now handled in RAW/PREROUTING
 
     # 6. ESTABLISHED/RELATED — after rate limit
     iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
@@ -790,10 +791,15 @@ echo "  2. DROP INVALID"
 echo "  3. Docker 172.16.0.0/12 → ACCEPT"
 echo "  4. UNTRACKED + GeoIP → ACCEPT (UDP)"
 echo "  5. Allowlist → ACCEPT"
-[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  6. Flood Penalty: >${RATE_LIMIT_PER_SECOND}/sec → Drop to ${THROTTLE_RATE}/sec for ${PENALTY_TIME}s"
-echo "  7. ESTABLISHED/RELATED → ACCEPT"
-echo "  8. GeoIP → ACCEPT (TCP)"
-echo "  9. DROP"
+echo "  [filter/INPUT & DOCKER]"
+echo "  1. lo → ACCEPT"
+echo "  2. DROP INVALID"
+echo "  3. Docker 172.16.0.0/12 → ACCEPT"
+echo "  4. UNTRACKED + GeoIP → ACCEPT (UDP)"
+echo "  5. Allowlist → ACCEPT"
+echo "  6. ESTABLISHED/RELATED → ACCEPT"
+echo "  7. GeoIP → ACCEPT (TCP)"
+echo "  8. DROP"
 echo ""
 echo "Kernel Hardening: /etc/sysctl.d/99-geo-firewall.conf"
 echo ""
