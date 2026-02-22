@@ -19,8 +19,8 @@ ENABLE_PING=false
 # RATE LIMITING
 # ALL PORTS: raw table (PREROUTING) → Fast Path Penalty (100 -> 10)
 ENABLE_RATE_LIMIT=true
-RATE_LIMIT_PER_SECOND=150   # PPS threshold to trigger penalty
-THROTTLE_RATE=5            # PPS limit during penalty
+RATE_LIMIT_PER_SECOND=200   # PPS threshold to trigger penalty
+THROTTLE_RATE=5             # PPS limit during penalty
 PENALTY_TIME=5              # Seconds to maintain penalty (xt_recent)
 
 # ALLOWLIST CONFIGURATION
