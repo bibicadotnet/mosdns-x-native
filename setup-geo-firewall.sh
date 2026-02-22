@@ -21,7 +21,7 @@ ENABLE_PING=false
 # UDP: raw table (before conntrack) → hashlimit DROP + NOTRACK
 ENABLE_RATE_LIMIT=true
 RATE_LIMIT_PER_SECOND=200   # The "Warning" threshold. If exceed this, the IP is flagged for penalty.
-THROTTLE_RATE=1             # The "Penalty" rate. Flagged IPs are throttled to this PPS & determines Burst size.
+THROTTLE_RATE=5             # The "Penalty" rate. Flagged IPs are throttled to this PPS & determines Burst size.
 PENALTY_TIME=5              # Duration (seconds) an IP remains in the penalty state after triggering.
 
 # ALLOWLIST CONFIGURATION
@@ -62,6 +62,10 @@ log() {
 # ==============================
 apply_kernel_tuning() {
     log "Applying kernel hardening..."
+    # Reload xt_recent with correct parameter
+    modprobe -r xt_recent 2>/dev/null || true
+    modprobe xt_recent ip_pkt_list_tot=1 2>/dev/null || true
+    echo "options xt_recent ip_pkt_list_tot=1" > /etc/modprobe.d/xt_recent.conf
     cat > /etc/sysctl.d/99-geo-firewall.conf << 'EOF'
 # High-Performance Kernel Tuning (16384 limits)
 net.ipv4.tcp_syncookies = 1
@@ -71,17 +75,11 @@ net.core.netdev_max_backlog = 16384
 net.ipv4.tcp_fin_timeout = 15
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fastopen = 3
-
 # MosDNS-X UDP Buffer for DNS-over-QUIC
 net.core.rmem_max = 7500000
 net.core.wmem_max = 7500000
-
-# xt_recent: only track 1 timestamp per IP (penalty non-refreshing)
-net.netfilter.xt_recent.ip_pkt_list_tot = 1
 EOF
     sysctl --system >/dev/null
-    # Immediate enforcement for xt_recent module parameter
-    echo 1 > /proc/sys/net/netfilter/xt_recent/ip_pkt_list_tot 2>/dev/null || true
     log "✓ Kernel hardening applied"
 }
 
