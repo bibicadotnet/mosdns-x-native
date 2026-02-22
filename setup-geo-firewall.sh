@@ -21,7 +21,7 @@ ENABLE_PING=false
 # UDP: raw table (before conntrack) → hashlimit DROP + NOTRACK
 ENABLE_RATE_LIMIT=true
 RATE_LIMIT_PER_SECOND=200   # The "Warning" threshold. If exceed this, the IP is flagged for penalty.
-THROTTLE_RATE=5             # The "Penalty" rate. Flagged IPs are throttled to this PPS & determines Burst size.
+THROTTLE_RATE=1             # The "Penalty" rate. Flagged IPs are throttled to this PPS & determines Burst size.
 PENALTY_TIME=5              # Duration (seconds) an IP remains in the penalty state after triggering.
 
 # ALLOWLIST CONFIGURATION
@@ -75,8 +75,13 @@ net.ipv4.tcp_fastopen = 3
 # MosDNS-X UDP Buffer for DNS-over-QUIC
 net.core.rmem_max = 7500000
 net.core.wmem_max = 7500000
+
+# xt_recent: only track 1 timestamp per IP (penalty non-refreshing)
+net.netfilter.xt_recent.ip_pkt_list_tot = 1
 EOF
     sysctl --system >/dev/null
+    # Immediate enforcement for xt_recent module parameter
+    echo 1 > /proc/sys/net/netfilter/xt_recent/ip_pkt_list_tot 2>/dev/null || true
     log "✓ Kernel hardening applied"
 }
 
@@ -410,8 +415,11 @@ add_rate_limit() {
     # 2. PENALTY DROP: If flagged and exceeds 10/sec quota
     iptables $t_flag -A "$sub" -m recent --rcheck --seconds "${PENALTY_TIME}" --name "FLOOD_${prefix}" -j DROP
     
-    # 3. DETECTION: If rate > 100/sec, mark for penalty
-    iptables $t_flag -A "$sub" -m hashlimit --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" --hashlimit-burst "${THROTTLE_RATE}" --hashlimit-name "${prefix}_det" \
+    # 3. DETECTION: sustained rate > RATE_LIMIT_PER_SECOND/sec → flag + DROP
+    # burst=RATE_LIMIT_PER_SECOND: allows natural microbursts up to the PPS threshold.
+    iptables $t_flag -A "$sub" \
+        -m hashlimit --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" --hashlimit-burst "${RATE_LIMIT_PER_SECOND}" \
+        --hashlimit-name "${prefix}_det" \
         -m recent --set --name "FLOOD_${prefix}" -j DROP
 
     iptables $t_flag -A "$sub" -j RETURN
