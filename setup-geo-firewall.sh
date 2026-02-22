@@ -1,8 +1,8 @@
 #!/bin/bash
 # setup-geo-firewall.sh
 # GeoIP-based firewall with Docker support
-# TCP: raw table hashlimit DROP (Zero CPU Peak Strategy)
-# UDP: raw table hashlimit DROP + NOTRACK (Zero CPU Peak Strategy)
+# TCP: filter table hashlimit DROP (after allowlist, before ESTABLISHED — counts all packets)
+# UDP: raw table hashlimit DROP + NOTRACK → bypass conntrack → lower CPU for DoQ/DoH3
 
 PUBLIC_IP=$(curl -s https://api.ipify.org)
 
@@ -17,11 +17,12 @@ ALLOW_UDP_PORTS=("53" "443" "853")
 ENABLE_PING=false
 
 # RATE LIMITING
-# ALL PORTS: raw table (PREROUTING) → Fast Path Penalty (100 -> 10)
+# TCP: filter table (before ESTABLISHED) → hashlimit DROP → counts all packets incl. persistent DoT/DoH
+# UDP: raw table (before conntrack) → hashlimit DROP + NOTRACK
 ENABLE_RATE_LIMIT=true
-RATE_LIMIT_PER_SECOND=200   # PPS threshold to trigger penalty
-THROTTLE_RATE=5             # PPS limit during penalty
-PENALTY_TIME=5              # Seconds to maintain penalty (xt_recent)
+RATE_LIMIT_PER_SECOND=200   # The "Warning" threshold. If exceed this, the IP is flagged for penalty.
+THROTTLE_RATE=5             # The "Penalty" rate. Flagged IPs are throttled to this PPS & determines Burst size.
+PENALTY_TIME=5              # Duration (seconds) an IP remains in the penalty state after triggering.
 
 # ALLOWLIST CONFIGURATION
 ALLOWLIST_URLS=(
@@ -62,7 +63,18 @@ log() {
 apply_kernel_tuning() {
     log "Applying kernel hardening..."
     cat > /etc/sysctl.d/99-geo-firewall.conf << 'EOF'
+# High-Performance Kernel Tuning (16384 limits)
 net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_max_syn_backlog = 16384
+net.core.somaxconn = 16384
+net.core.netdev_max_backlog = 16384
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fastopen = 3
+
+# MosDNS-X UDP Buffer for DNS-over-QUIC
+net.core.rmem_max = 7500000
+net.core.wmem_max = 7500000
 EOF
     sysctl --system >/dev/null
     log "✓ Kernel hardening applied"
@@ -89,16 +101,6 @@ cleanup_all() {
 
     iptables -t raw -F PREROUTING 2>/dev/null || true
     iptables -t raw -F OUTPUT 2>/dev/null || true
-
-    # Delete RL_* rate-limit sub-chains
-    for chain in $(iptables -S 2>/dev/null | awk '/^-N RL_/{print $2}'); do
-        iptables -F "$chain" 2>/dev/null || true
-        iptables -X "$chain" 2>/dev/null || true
-    done
-    for chain in $(iptables -t raw -S 2>/dev/null | awk '/^-N RL_/{print $2}'); do
-        iptables -t raw -F "$chain" 2>/dev/null || true
-        iptables -t raw -X "$chain" 2>/dev/null || true
-    done
 
     for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
         ipset destroy "$ipset_name" 2>/dev/null || true
@@ -176,15 +178,7 @@ echo "✓ Firewall chains removed"
 
 iptables -t raw -F PREROUTING 2>/dev/null || true
 iptables -t raw -F OUTPUT 2>/dev/null || true
-for chain in $(iptables -S 2>/dev/null | awk '/^-N RL_/{print $2}'); do
-    iptables -F "$chain" 2>/dev/null || true
-    iptables -X "$chain" 2>/dev/null || true
-done
-for chain in $(iptables -t raw -S 2>/dev/null | awk '/^-N RL_/{print $2}'); do
-    iptables -t raw -F "$chain" 2>/dev/null || true
-    iptables -t raw -X "$chain" 2>/dev/null || true
-done
-echo "✓ Raw table + RL sub-chains cleared"
+echo "✓ Raw table cleared"
 
 for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
     ipset destroy "$ipset_name" 2>/dev/null || true
@@ -402,97 +396,55 @@ update_ipsets() {
 # ==============================
 # RATE LIMIT HELPER (xt_recent + hashlimit)
 # "If rate > 100/sec, then limit to 10/sec"
-# Optimized for high-throughput UDP: Penalized IPs are handled FIRST.
 # ==============================
 add_rate_limit() {
-    local table="$1"   # "raw" or "filter"
-    local chain="$2"   # parent chain
-    local proto="$3"
-    local port="$4"
-    local prefix="$5"
-
-    local t_flag=""
-    [[ "$table" == "raw" ]] && t_flag="-t raw"
-
+    local table="$1"; local chain="$2"; local proto="$3"; local port="$4"; local prefix="$5"
+    local t_flag=""; [[ "$table" == "raw" ]] && t_flag="-t raw"
     local sub="RL_${prefix}"
     iptables $t_flag -N "$sub" 2>/dev/null || iptables $t_flag -F "$sub"
 
-    # 1. PENALTY CHECK: If already flagged in last 5s, enforce the 10/sec cap immediately.
-    # This is the "fast path" for flooders - saves CPU by skipping the 100/sec detector.
-    iptables $t_flag -A "$sub" \
-        -m recent --rcheck --seconds "${PENALTY_TIME}" --name "FLOOD_${prefix}" \
-        -m hashlimit \
-        --hashlimit-mode srcip \
-        --hashlimit-upto "${THROTTLE_RATE}/sec" \
-        --hashlimit-burst 5 \
-        --hashlimit-name "${prefix}_pen" \
-        -j RETURN
+    # 1. PENALTY CHECK: If flagged, enforce 10/sec cap
+    iptables $t_flag -A "$sub" -m recent --rcheck --seconds "${PENALTY_TIME}" --name "FLOOD_${prefix}" \
+        -m hashlimit --hashlimit-upto "${THROTTLE_RATE}/sec" --hashlimit-burst "${THROTTLE_RATE}" --hashlimit-name "${prefix}_pen" -j RETURN
+    
+    # 2. PENALTY DROP: If flagged and exceeds 10/sec quota
+    iptables $t_flag -A "$sub" -m recent --rcheck --seconds "${PENALTY_TIME}" --name "FLOOD_${prefix}" -j DROP
+    
+    # 3. DETECTION: If rate > 100/sec, mark for penalty
+    iptables $t_flag -A "$sub" -m hashlimit --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" --hashlimit-burst "${THROTTLE_RATE}" --hashlimit-name "${prefix}_det" \
+        -m recent --set --name "FLOOD_${prefix}" -j DROP
 
-    # 2. PENALTY DROP: If already flagged and exceeded the 10/sec quota.
-    iptables $t_flag -A "$sub" \
-        -m recent --rcheck --seconds "${PENALTY_TIME}" --name "FLOOD_${prefix}" \
-        -j DROP
-
-    # 3. DETECTION: If NOT flagged yet, check if rate > 100/sec.
-    # If yes: mark as flooder and DROP the triggering packet.
-    # burst=5 ensures near-instant penalty (trigger after only 5 excess packets)
-    iptables $t_flag -A "$sub" \
-        -m hashlimit \
-        --hashlimit-mode srcip \
-        --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" \
-        --hashlimit-burst 5 \
-        --hashlimit-name "${prefix}_det" \
-        -m recent --set --name "FLOOD_${prefix}" \
-        -j DROP
-
-    # 4. NORMAL: Full pass (Return to parent chain)
     iptables $t_flag -A "$sub" -j RETURN
-
-    # Hook to parent
     iptables $t_flag -A "$chain" $proto --dport "$port" -j "$sub"
 }
 
 # ==============================
-# ==============================
 # BUILD RAW TABLE
-# Handling both TCP and UDP rate limiting here to save CPU
-# Dropping flooders before conntrack = Zero CPU impact
+# UDP only: allowlist bypass → hashlimit DROP → NOTRACK valid packets
+# OUTPUT: NOTRACK UDP reply packets
 # ==============================
 build_raw_table() {
     iptables -t raw -F PREROUTING
     iptables -t raw -F OUTPUT
 
-    # 1. Allowlist bypass (TCP & UDP)
-    for port in "${ALLOW_TCP_PORTS[@]}"; do
-        iptables -t raw -A PREROUTING -p tcp --dport "$port" \
-            -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
-    done
     for port in "${ALLOW_UDP_PORTS[@]}"; do
+        # 1. Allowlist bypass
         iptables -t raw -A PREROUTING -p udp --dport "$port" \
             -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
-    done
 
-    # 2. Rate Limiting (All Ports) - in RAW table
-    if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-        for port in "${ALLOW_TCP_PORTS[@]}"; do
-            add_rate_limit "raw" "PREROUTING" "-p tcp" "$port" "tcp_${port}"
-        done
-        for port in "${ALLOW_UDP_PORTS[@]}"; do
+        if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
+            # 2. Rate limit — DROP flood before conntrack
             add_rate_limit "raw" "PREROUTING" "-p udp" "$port" "udp_${port}"
-        done
-    fi
+        fi
 
-    # 3. NOTRACK for UDP packets
-    for port in "${ALLOW_UDP_PORTS[@]}"; do
+        # 3. NOTRACK valid UDP — no conntrack entries → lower CPU for DoQ/DoH3
         iptables -t raw -A PREROUTING -p udp --dport "$port" -j CT --notrack
-    done
 
-    # 4. NOTRACK for UDP replies
-    for port in "${ALLOW_UDP_PORTS[@]}"; do
+        # 4. NOTRACK reply — reply packets also bypass conntrack
         iptables -t raw -A OUTPUT -p udp --sport "$port" -j CT --notrack
     done
 
-    log "✓ RAW table built (TCP+UDP rate limit @ PREROUTING)"
+    log "✓ RAW table built (UDP: hashlimit DROP + NOTRACK)"
 }
 
 # ==============================
@@ -503,10 +455,11 @@ build_raw_table() {
 #  2. DROP INVALID
 #  3. Docker 172.16.0.0/12 → ACCEPT
 #  4. UNTRACKED + GeoIP → ACCEPT    (UDP NOTRACKed from raw table)
-#  5. ALLOWLIST → ACCEPT
-#  6. ESTABLISHED,RELATED → ACCEPT
-#  7. GEOIP TCP → ACCEPT
-#  8. DROP
+#  5. ALLOWLIST → ACCEPT            (bypass rate limit)
+#  6. TCP rate limit → DROP         (before ESTABLISHED — counts ALL packets incl. persistent DoT/DoH)
+#  7. ESTABLISHED,RELATED → ACCEPT  (TCP — after rate limit)
+#  8. GEOIP TCP → ACCEPT            (new TCP connections)
+#  9. DROP
 # ==============================
 build_chain_input() {
     local allowlist_count=$1
@@ -552,6 +505,14 @@ build_chain_input() {
         log "✓ INPUT: allowlist rules added"
     fi
 
+    # 6. TCP rate limit — BEFORE ESTABLISHED to count all packets incl. persistent connections
+    # No --ctstate NEW: DoT/DoH reuse connections, must count all packets not just new
+    if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
+        for port in "${ALLOW_TCP_PORTS[@]}"; do
+            add_rate_limit "filter" "$CHAIN_INPUT" "-p tcp" "$port" "tcp_${port}"
+        done
+        log "✓ INPUT: TCP rate limit added (${RATE_LIMIT_PER_SECOND}/sec -> ${THROTTLE_RATE}/sec)"
+    fi
 
     # 7. ESTABLISHED/RELATED — after rate limit (TCP only meaningful here)
     iptables -A "$CHAIN_INPUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
@@ -604,6 +565,12 @@ build_chain_docker() {
         done
     fi
 
+    # 5. TCP rate limit — before ESTABLISHED
+    if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
+        for port in "${ALLOW_TCP_PORTS[@]}"; do
+            add_rate_limit "filter" "$CHAIN_DOCKER" "-p tcp" "$port" "docker_tcp_${port}"
+        done
+    fi
 
     # 6. ESTABLISHED/RELATED — after rate limit
     iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
@@ -690,7 +657,7 @@ main() {
         log "  UDP Ports:   ${ALLOW_UDP_PORTS[*]}"
         log "  Allowlist:   $allowlist_count entries"
         log "  Country IPs: $country_count CIDRs"
-        [[ "$ENABLE_RATE_LIMIT" == "true" ]] && log "  Rate Limit:  ${RATE_LIMIT_PER_SECOND}/sec (TCP: filter before ESTABLISHED, UDP: raw+NOTRACK)"
+        [[ "$ENABLE_RATE_LIMIT" == "true" ]] && log "  Rate Limit:  ${RATE_LIMIT_PER_SECOND}/sec -> ${THROTTLE_RATE}/sec (UDP: raw, TCP: filter)"
         log "=========================================="
     else
         log "✓ Done"
@@ -779,7 +746,7 @@ echo ""
 echo "Rule Order:"
 echo "  [raw/PREROUTING — UDP only]"
 echo "  1. Allowlist → RETURN"
-[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  2. Flood Penalty: >${RATE_LIMIT_PER_SECOND}/sec → Drop to ${THROTTLE_RATE}/sec for ${PENALTY_TIME}s"
+[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  2. hashlimit UDP ${RATE_LIMIT_PER_SECOND}/sec → DROP"
 echo "  3. CT --notrack UDP"
 echo ""
 echo "  [raw/OUTPUT — UDP only]"
@@ -791,15 +758,10 @@ echo "  2. DROP INVALID"
 echo "  3. Docker 172.16.0.0/12 → ACCEPT"
 echo "  4. UNTRACKED + GeoIP → ACCEPT (UDP)"
 echo "  5. Allowlist → ACCEPT"
-echo "  [filter/INPUT & DOCKER]"
-echo "  1. lo → ACCEPT"
-echo "  2. DROP INVALID"
-echo "  3. Docker 172.16.0.0/12 → ACCEPT"
-echo "  4. UNTRACKED + GeoIP → ACCEPT (UDP)"
-echo "  5. Allowlist → ACCEPT"
-echo "  6. ESTABLISHED/RELATED → ACCEPT"
-echo "  7. GeoIP → ACCEPT (TCP)"
-echo "  8. DROP"
+[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  6. hashlimit TCP ${RATE_LIMIT_PER_SECOND}/sec → DROP  (before ESTABLISHED)"
+echo "  7. ESTABLISHED/RELATED → ACCEPT"
+echo "  8. GeoIP → ACCEPT (TCP)"
+echo "  9. DROP"
 echo ""
 echo "Kernel Hardening: /etc/sysctl.d/99-geo-firewall.conf"
 echo ""
@@ -811,12 +773,10 @@ echo ""
 echo "Rate Limit Stats:"
 if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
     for port in "${ALLOW_UDP_PORTS[@]}"; do
-        echo "  • UDP $port flood list: cat /proc/net/xt_recent/FLOOD_udp_${port}"
-        echo "  • UDP $port stats:      cat /proc/net/ipt_hashlimit/udp_${port}_det"
+        echo "  • UDP $port: cat /proc/net/ipt_hashlimit/raw_udp_${port}_limit"
     done
     for port in "${ALLOW_TCP_PORTS[@]}"; do
-        echo "  • TCP $port flood list: cat /proc/net/xt_recent/FLOOD_tcp_${port}"
-        echo "  • TCP $port stats:      cat /proc/net/ipt_hashlimit/tcp_${port}_det"
+        echo "  • TCP $port: cat /proc/net/ipt_hashlimit/tcp_${port}_limit"
     done
 fi
 echo ""
