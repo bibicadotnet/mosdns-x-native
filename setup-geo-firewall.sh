@@ -2,6 +2,8 @@
 # setup-geo-firewall.sh
 # GeoIP and Rate Limit protection with Docker support
 
+PUBLIC_IP=$(curl -s https://api.ipify.org)
+
 # ==============================
 # USER CONFIGURATION
 # ==============================
@@ -31,7 +33,7 @@ ALLOWLIST_URLS=(
     "https://www.cloudflare.com/ips-v4/"
 )
 # Static IPs that always bypass all rules
-ALLOWLIST_IPS=("217.15.166.168")
+ALLOWLIST_IPS=("217.15.166.168" "$PUBLIC_IP")
 
 # ==============================
 # PATHS
@@ -89,15 +91,22 @@ apply_kernel_tuning() {
         || log "WARNING: xt_recent update failed (val=$val) — reboot may be required"
 
     cat > /etc/sysctl.d/99-geo-firewall.conf << 'EOF'
+# Kernel Tuning
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_max_syn_backlog = 16384
 net.core.somaxconn = 16384
-net.core.netdev_max_backlog = 16384
 net.ipv4.tcp_fin_timeout = 15
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_max_tw_buckets = 32768
+net.ipv4.tcp_slow_start_after_idle = 0
+net.core.netdev_max_backlog = 16384
+net.core.netdev_budget = 300
 net.core.rmem_max = 7500000
 net.core.wmem_max = 7500000
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+net.ipv4.ip_local_port_range = 32768 60999
 EOF
     sysctl --system >/dev/null
     log "Kernel hardening applied"
