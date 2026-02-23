@@ -27,7 +27,7 @@ ENABLE_PING=false
 # RATE LIMIT CONFIGURATION
 ENABLE_RATE_LIMIT=true
 RATE_LIMIT_UDP=200          # PPS threshold for UDP
-RATE_LIMIT_TCP=500         # PPS threshold for TCP
+RATE_LIMIT_TCP=500          # PPS threshold for TCP
 THROTTLE_RATE=5             # PPS limit during penalty phase
 PENALTY_TIME=5              # Penalty duration in seconds (resets while flood continues)
 
@@ -62,6 +62,8 @@ CIDR_REGEX='^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0
 # ==============================
 set -euo pipefail
 [[ $EUID -ne 0 ]] && { echo "ERROR: Run as root"; exit 1; }
+renice -n 19 $$ >/dev/null 2>&1 || true
+ionice -c 3 -p $$ 2>/dev/null || true
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 trap 'log "ERROR at line $LINENO: $BASH_COMMAND (exit $?)"' ERR
 
@@ -158,6 +160,8 @@ cleanup_all() {
 
 # ==============================
 # DOWNLOAD
+# Downloads save raw concatenated data (no grep/sort)
+# Expensive regex parsing only runs when data changes
 # ==============================
 download_allowlist() {
     local tmp; tmp=$(mktemp -d)
@@ -176,9 +180,9 @@ download_allowlist() {
         fi
     done
     wait
-    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$DATA_DIR/allowlist.raw" || true
+    cat "$tmp"/*.txt 2>/dev/null > "$DATA_DIR/allowlist.concat" || true
     rm -rf "$tmp"
-    if [[ ! -s "$DATA_DIR/allowlist.raw" ]]; then
+    if [[ ! -s "$DATA_DIR/allowlist.concat" ]]; then
         log "ERROR: allowlist download failed"; return 1
     fi
 }
@@ -209,19 +213,21 @@ download_country() {
         fi
     done
     wait
-    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$DATA_DIR/country.raw" || true
+    cat "$tmp"/*.txt 2>/dev/null > "$DATA_DIR/country.concat" || true
     rm -rf "$tmp"
-    if [[ ! -s "$DATA_DIR/country.raw" ]]; then
+    if [[ ! -s "$DATA_DIR/country.concat" ]]; then
         log "ERROR: country download failed"; return 1
     fi
 }
 
 # ==============================
 # IPSET UPDATE
+# Hash raw download BEFORE expensive grep → zero CPU when unchanged
 # ==============================
 update_ipset() {
     local name="$1" ipset_name="$2" ipset_type="$3" maxelem="$4"
     local raw="$DATA_DIR/${name}.raw"
+    local concat="$DATA_DIR/${name}.concat"
     local hash_file="$HASH_DIR/${name}.sha256"
     local tmp_name="${ipset_name}_tmp"
 
@@ -232,8 +238,9 @@ update_ipset() {
         download_country || return 1
     fi
 
+    # Hash raw downloaded data (fast — no regex)
     local new_hash old_hash current_count
-    new_hash=$(sha256sum "$raw" | cut -d' ' -f1)
+    new_hash=$(sha256sum "$concat" | cut -d' ' -f1)
     old_hash=$(cat "$hash_file" 2>/dev/null || echo "")
 
     current_count=0
@@ -243,7 +250,17 @@ update_ipset() {
 
     if [[ "$new_hash" == "$old_hash" && "$current_count" -gt 0 ]]; then
         log "$name: unchanged ($current_count entries), skipping"
+        rm -f "$concat"
         return 0
+    fi
+
+    # Data changed or ipset empty → run expensive grep + sort
+    log "$name: processing new data..."
+    grep -Eo "$CIDR_REGEX" "$concat" | sort -u > "$raw" || true
+    rm -f "$concat"
+
+    if [[ ! -s "$raw" ]]; then
+        log "ERROR: $name processing failed"; return 1
     fi
 
     log "$name: rebuilding ipset..."
@@ -518,6 +535,8 @@ CIDR_REGEX='$CIDR_REGEX'
 
 log() { echo "[\$(date '+%Y-%m-%d %H:%M:%S')] \$*"; }
 trap 'log "ERROR at line \$LINENO: \$BASH_COMMAND (exit \$?)"' ERR
+renice -n 19 \$\$ >/dev/null 2>&1 || true
+ionice -c 3 -p \$\$ 2>/dev/null || true
 EOF
 
     cat >> "$FIREWALL_SCRIPT" << 'SCRIPT_EOF'
@@ -539,9 +558,9 @@ download_allowlist() {
         fi
     done
     wait
-    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$DATA_DIR/allowlist.raw" || true
+    cat "$tmp"/*.txt 2>/dev/null > "$DATA_DIR/allowlist.concat" || true
     rm -rf "$tmp"
-    if [[ ! -s "$DATA_DIR/allowlist.raw" ]]; then
+    if [[ ! -s "$DATA_DIR/allowlist.concat" ]]; then
         log "ERROR: allowlist download failed"; return 1
     fi
 }
@@ -572,9 +591,9 @@ download_country() {
         fi
     done
     wait
-    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$DATA_DIR/country.raw" || true
+    cat "$tmp"/*.txt 2>/dev/null > "$DATA_DIR/country.concat" || true
     rm -rf "$tmp"
-    if [[ ! -s "$DATA_DIR/country.raw" ]]; then
+    if [[ ! -s "$DATA_DIR/country.concat" ]]; then
         log "ERROR: country download failed"; return 1
     fi
 }
@@ -582,6 +601,7 @@ download_country() {
 update_ipset() {
     local name="$1" ipset_name="$2" ipset_type="$3" maxelem="$4"
     local raw="$DATA_DIR/${name}.raw"
+    local concat="$DATA_DIR/${name}.concat"
     local hash_file="$HASH_DIR/${name}.sha256"
     local tmp_name="${ipset_name}_tmp"
 
@@ -592,8 +612,9 @@ update_ipset() {
         download_country || return 1
     fi
 
+    # Hash raw downloaded data (fast — no regex)
     local new_hash old_hash current_count
-    new_hash=$(sha256sum "$raw" | cut -d' ' -f1)
+    new_hash=$(sha256sum "$concat" | cut -d' ' -f1)
     old_hash=$(cat "$hash_file" 2>/dev/null || echo "")
 
     current_count=0
@@ -603,7 +624,17 @@ update_ipset() {
 
     if [[ "$new_hash" == "$old_hash" && "$current_count" -gt 0 ]]; then
         log "$name: unchanged ($current_count entries), skipping"
+        rm -f "$concat"
         return 0
+    fi
+
+    # Data changed or ipset empty → run expensive grep + sort
+    log "$name: processing new data..."
+    grep -Eo "$CIDR_REGEX" "$concat" | sort -u > "$raw" || true
+    rm -f "$concat"
+
+    if [[ ! -s "$raw" ]]; then
+        log "ERROR: $name processing failed"; return 1
     fi
 
     log "$name: rebuilding ipset..."
