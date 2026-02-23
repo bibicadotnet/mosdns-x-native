@@ -1,60 +1,84 @@
 #!/bin/bash
 # setup-geo-firewall.sh
-# GeoIP-based firewall with Docker support
-# TCP: filter table hashlimit DROP (after allowlist, before ESTABLISHED — counts all packets)
-# UDP: raw table hashlimit DROP + NOTRACK → bypass conntrack → lower CPU for DoQ/DoH3
-
-PUBLIC_IP=$(curl -s https://api.ipify.org)
+# Run as root to install. Re-run to reconfigure.
+#
+# Architecture:
+#   setup-geo-firewall.sh  — installs everything, builds iptables rules, saves rules.v4
+#   geo-firewall.sh        — ONLY updates ipsets (cron daily + systemd on boot)
+#   netfilter-persistent   — restores rules.v4 on boot
+#   cron                   — runs geo-firewall.sh daily to refresh IP lists
 
 # ==============================
 # USER CONFIGURATION
 # ==============================
+
+# Allowed countries (ISO 3166-1 alpha-2 codes)
 ALLOW_COUNTRIES=("VN" "SG" "JP" "HK")
+
+# TCP/UDP ports open to allowed countries
 ALLOW_TCP_PORTS=("22" "2224" "53" "443" "853")
 ALLOW_UDP_PORTS=("53" "443" "853")
 
-# PING Configuration
+# Allow ICMP ping from allowed countries
 ENABLE_PING=false
 
-# RATE LIMITING
-# TCP: filter table (before ESTABLISHED) → hashlimit DROP → counts all packets incl. persistent DoT/DoH
-# UDP: raw table (before conntrack) → hashlimit DROP + NOTRACK
+# Enable rate limiting (DDoS protection)
 ENABLE_RATE_LIMIT=true
-RATE_LIMIT_PER_SECOND=200   # The "Warning" threshold. If exceed this, the IP is flagged for penalty.
-THROTTLE_RATE=5             # The "Penalty" rate. Flagged IPs are throttled to this PPS & determines Burst size.
-PENALTY_TIME=5              # Duration (seconds) an IP remains in the penalty state after triggering.
+# Detection threshold (packets/sec) — exceeding this flags the IP
+RATE_LIMIT_UDP=200
+RATE_LIMIT_TCP=200
+# Max packets/sec while IP is penalized
+THROTTLE_RATE=5
+# Penalty duration (seconds) — flagged IPs are throttled for this long
+PENALTY_TIME=5
 
-# ALLOWLIST CONFIGURATION
+# URLs containing IPs that always bypass all rules
 ALLOWLIST_URLS=(
     "https://hetrixtools.com/resources/uptime-monitor-only-ips.txt"
     "https://www.cloudflare.com/ips-v4/"
 )
-ALLOWLIST_IPS=("217.15.166.168" "$PUBLIC_IP")
+# Static IPs that always bypass all rules
+ALLOWLIST_IPS=("217.15.166.168")
 
 # ==============================
-# SYSTEM CONFIGURATION
+# PATHS
 # ==============================
-SCRIPT_DIR="/home/geo-firewall"
-DATA_DIR="$SCRIPT_DIR/data"
-HASH_DIR="$SCRIPT_DIR/hash"
-FIREWALL_SCRIPT="$SCRIPT_DIR/geo-firewall.sh"
+INSTALL_DIR="/home/geo-firewall"
+DATA_DIR="$INSTALL_DIR/data"
+HASH_DIR="$INSTALL_DIR/hash"
+FIREWALL_SCRIPT="$INSTALL_DIR/geo-firewall.sh"
+RESET_SCRIPT="$INSTALL_DIR/emergency-reset.sh"
 SERVICE_FILE="/etc/systemd/system/geo-firewall.service"
-RESET_SCRIPT="$SCRIPT_DIR/emergency-reset.sh"
 
 CHAIN_INPUT="GEO_INPUT"
 CHAIN_DOCKER="GEO_DOCKER"
+CHAIN_RAW_IN="GEO_RAW_IN"
+CHAIN_RAW_OUT="GEO_RAW_OUT"
 IPSET_COUNTRY="geo_country"
 IPSET_ALLOWLIST="geo_allowlist"
+CIDR_REGEX='^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\/(3[0-2]|[12][0-9]|[1-9]))?$'
 
+# ==============================
+# BOOTSTRAP
+# ==============================
 set -euo pipefail
+[[ $EUID -ne 0 ]] && { echo "ERROR: Run as root"; exit 1; }
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+trap 'log "ERROR at line $LINENO: $BASH_COMMAND (exit $?)"' ERR
 
-if [[ $EUID -ne 0 ]]; then
-    echo "ERROR: This script must be run as root (use sudo)." >&2
-    exit 1
-fi
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+# ==============================
+# DEPENDENCIES
+# ==============================
+install_deps() {
+    log "Installing dependencies..."
+    if command -v apt-get >/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ipset iptables-persistent curl
+    elif command -v yum >/dev/null; then
+        yum install -y -q ipset iptables-services curl
+    else
+        log "ERROR: Unsupported package manager"; exit 1
+    fi
 }
 
 # ==============================
@@ -62,12 +86,16 @@ log() {
 # ==============================
 apply_kernel_tuning() {
     log "Applying kernel hardening..."
-    # Reload xt_recent with correct parameter
+    echo "options xt_recent ip_pkt_list_tot=1" > /etc/modprobe.d/xt_recent.conf
     modprobe -r xt_recent 2>/dev/null || true
     modprobe xt_recent ip_pkt_list_tot=1 2>/dev/null || true
-    echo "options xt_recent ip_pkt_list_tot=1" > /etc/modprobe.d/xt_recent.conf
+
+    local val; val=$(cat /sys/module/xt_recent/parameters/ip_pkt_list_tot 2>/dev/null || echo "?")
+    [[ "$val" == "1" ]] \
+        && log "xt_recent: ip_pkt_list_tot=1 OK" \
+        || log "WARNING: xt_recent update failed (val=$val) — reboot may be required"
+
     cat > /etc/sysctl.d/99-geo-firewall.conf << 'EOF'
-# High-Performance Kernel Tuning (16384 limits)
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_max_syn_backlog = 16384
 net.core.somaxconn = 16384
@@ -75,348 +103,198 @@ net.core.netdev_max_backlog = 16384
 net.ipv4.tcp_fin_timeout = 15
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fastopen = 3
-# MosDNS-X UDP Buffer for DNS-over-QUIC
 net.core.rmem_max = 7500000
 net.core.wmem_max = 7500000
 EOF
     sysctl --system >/dev/null
-    log "✓ Kernel hardening applied"
+    log "Kernel hardening applied"
 }
 
 # ==============================
-# CLEANUP FUNCTION
+# CLEANUP ALL
+# Wipes everything created by this script — runs at start of every setup
 # ==============================
 cleanup_all() {
-    log "Cleaning up existing configurations..."
+    log "Clearing previous installation..."
 
-    if systemctl is-active --quiet geo-firewall.service 2>/dev/null; then
-        systemctl stop geo-firewall.service 2>/dev/null || true
-    fi
+    systemctl stop    geo-firewall.service 2>/dev/null || true
     systemctl disable geo-firewall.service 2>/dev/null || true
 
-    iptables -D INPUT -j "$CHAIN_INPUT" 2>/dev/null || true
-    iptables -D DOCKER-USER -j "$CHAIN_DOCKER" 2>/dev/null || true
+    iptables    -D INPUT       -j "$CHAIN_INPUT"   2>/dev/null || true
+    iptables    -D DOCKER-USER -j "$CHAIN_DOCKER"  2>/dev/null || true
+    iptables -t raw -D PREROUTING -j "$CHAIN_RAW_IN"  2>/dev/null || true
+    iptables -t raw -D OUTPUT     -j "$CHAIN_RAW_OUT" 2>/dev/null || true
 
-    for chain in "$CHAIN_INPUT" "$CHAIN_DOCKER"; do
+    while IFS= read -r chain; do
         iptables -F "$chain" 2>/dev/null || true
         iptables -X "$chain" 2>/dev/null || true
-    done
+    done < <(iptables-save 2>/dev/null | awk -F'[ :]' '/^:(GEO_|RL_)/{print $2}')
 
-    iptables -t raw -F PREROUTING 2>/dev/null || true
-    iptables -t raw -F OUTPUT 2>/dev/null || true
+    while IFS= read -r chain; do
+        iptables -t raw -F "$chain" 2>/dev/null || true
+        iptables -t raw -X "$chain" 2>/dev/null || true
+    done < <(iptables -t raw -S 2>/dev/null | awk '/^-N (GEO_|RL_)/{print $2}')
 
-    for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
-        ipset destroy "$ipset_name" 2>/dev/null || true
+    if [[ -d /proc/net/xt_recent ]]; then
+        for f in /proc/net/xt_recent/FLOOD_*; do
+            [[ -f "$f" ]] && echo "/" > "$f" 2>/dev/null || true
+        done
+    fi
+
+    for s in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
+        ipset destroy "$s" 2>/dev/null || true
     done
 
     crontab -l 2>/dev/null | grep -v "$FIREWALL_SCRIPT" | crontab - 2>/dev/null || true
-
     rm -f "$SERVICE_FILE"
+    rm -f /etc/sysctl.d/99-geo-firewall.conf
+    rm -f /etc/modprobe.d/xt_recent.conf
+    rm -rf "$INSTALL_DIR"
+
     systemctl daemon-reload 2>/dev/null || true
-    rm -rf "$SCRIPT_DIR"
-
-    mkdir -p /etc/iptables
-    iptables-save > /etc/iptables/rules.v4
-    if command -v netfilter-persistent >/dev/null; then
-        netfilter-persistent save 2>/dev/null || true
-    fi
-
-    log "✓ Cleanup complete"
-}
-
-# ==============================
-# INSTALL DEPENDENCIES
-# ==============================
-log "Installing required packages..."
-if command -v apt-get >/dev/null; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq ipset iptables-persistent curl
-elif command -v yum >/dev/null; then
-    yum install -y -q ipset iptables-services curl
-else
-    log "ERROR: Unsupported package manager"
-    exit 1
-fi
-
-apply_kernel_tuning
-cleanup_all
-mkdir -p "$SCRIPT_DIR" "$DATA_DIR" "$HASH_DIR"
-
-# ==============================
-# GENERATE EMERGENCY RESET SCRIPT
-# ==============================
-log "Creating emergency reset script..."
-
-cat > "$RESET_SCRIPT" << 'EOF_RESET'
-#!/bin/bash
-set -euo pipefail
-
-SCRIPT_DIR="/home/geo-firewall"
-FIREWALL_SCRIPT="$SCRIPT_DIR/geo-firewall.sh"
-SERVICE_FILE="/etc/systemd/system/geo-firewall.service"
-CHAIN_INPUT="GEO_INPUT"
-CHAIN_DOCKER="GEO_DOCKER"
-IPSET_COUNTRY="geo_country"
-IPSET_ALLOWLIST="geo_allowlist"
-
-echo "=========================================="
-echo "⚠️  EMERGENCY FIREWALL RESET"
-echo "=========================================="
-
-if systemctl is-active --quiet geo-firewall.service 2>/dev/null; then
-    systemctl stop geo-firewall.service 2>/dev/null || true
-    echo "✓ Service stopped"
-fi
-systemctl disable geo-firewall.service 2>/dev/null || true
-
-iptables -D INPUT -j "$CHAIN_INPUT" 2>/dev/null || true
-iptables -D DOCKER-USER -j "$CHAIN_DOCKER" 2>/dev/null || true
-
-for chain in "$CHAIN_INPUT" "$CHAIN_DOCKER"; do
-    iptables -F "$chain" 2>/dev/null || true
-    iptables -X "$chain" 2>/dev/null || true
-done
-echo "✓ Firewall chains removed"
-
-iptables -t raw -F PREROUTING 2>/dev/null || true
-iptables -t raw -F OUTPUT 2>/dev/null || true
-echo "✓ Raw table cleared"
-
-for ipset_name in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
-    ipset destroy "$ipset_name" 2>/dev/null || true
-done
-echo "✓ IPsets destroyed"
-
-crontab -l 2>/dev/null | grep -v "$FIREWALL_SCRIPT" | crontab - 2>/dev/null || true
-echo "✓ Cron job removed"
-
-rm -f "$SERVICE_FILE"
-systemctl daemon-reload 2>/dev/null || true
-echo "✓ Systemd service removed"
-
-rm -rf "$SCRIPT_DIR"
-echo "✓ Scripts removed"
-
-rm -f /etc/sysctl.d/99-geo-firewall.conf
-sysctl --system >/dev/null 2>&1 || true
-echo "✓ Kernel tuning reverted"
-
-mkdir -p /etc/iptables
-iptables-save > /etc/iptables/rules.v4
-if command -v netfilter-persistent >/dev/null; then
-    netfilter-persistent save 2>/dev/null || true
-fi
-echo "✓ Configuration saved"
-
-echo "=========================================="
-echo "✓ All geo-firewall components removed"
-echo "=========================================="
-EOF_RESET
-
-chmod +x "$RESET_SCRIPT"
-
-# ==============================
-# GENERATE FIREWALL SCRIPT
-# ==============================
-log "Generating firewall script..."
-
-cat > "$FIREWALL_SCRIPT" << 'EOF_MAIN'
-#!/bin/bash
-set -euo pipefail
-
-# Configuration (injected by sed)
-ALLOW_COUNTRIES=()
-ALLOW_TCP_PORTS=()
-ALLOW_UDP_PORTS=()
-ALLOWLIST_URLS=()
-ALLOWLIST_IPS=()
-ENABLE_PING=false
-ENABLE_RATE_LIMIT=false
-RATE_LIMIT_PER_SECOND=100
-THROTTLE_RATE=10
-PENALTY_TIME=5
-
-# Paths
-SCRIPT_DIR="/home/geo-firewall"
-DATA_DIR="$SCRIPT_DIR/data"
-HASH_DIR="$SCRIPT_DIR/hash"
-
-# Chain/IPSet names
-CHAIN_INPUT="GEO_INPUT"
-CHAIN_DOCKER="GEO_DOCKER"
-IPSET_COUNTRY="geo_country"
-IPSET_ALLOWLIST="geo_allowlist"
-
-# Valid IPv4 CIDR: octets 0-255, prefix 1-32 (reject /0)
-CIDR_REGEX='^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\/(3[0-2]|[12][0-9]|[1-9]))?$'
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+    log "Cleared"
 }
 
 # ==============================
 # DOWNLOAD
-# Fixed order per source → stable content → stable hash → skip on cron if unchanged
 # ==============================
-download_raw_allowlist() {
-    local raw="$DATA_DIR/allowlist.raw"
-    local tmp="$DATA_DIR/tmp_allowlist"
-    rm -rf "$tmp" && mkdir -p "$tmp"
-
+download_allowlist() {
+    local tmp; tmp=$(mktemp -d)
     local i=0
     for ip in "${ALLOWLIST_IPS[@]}"; do
-        [[ -z "$ip" ]] && continue
-        echo "$ip" > "$tmp/$(printf '%03d' $i)_local.txt"
-        (( i++ )) || true
+        if [[ -n "$ip" ]]; then
+            echo "$ip" > "$tmp/$(printf '%04d' $i)_local.txt"
+            i=$(( i + 1 ))
+        fi
     done
     for url in "${ALLOWLIST_URLS[@]}"; do
-        [[ -z "$url" ]] && continue
-        local file="$tmp/$(printf '%03d' $i)_url.txt"
-        curl -sf --connect-timeout 10 --max-time 30 "$url" > "$file" 2>/dev/null &
-        (( i++ )) || true
+        if [[ -n "$url" ]]; then
+            curl -sf --connect-timeout 10 --max-time 30 "$url" \
+                > "$tmp/$(printf '%04d' $i)_url.txt" 2>/dev/null &
+            i=$(( i + 1 ))
+        fi
     done
     wait
-
-    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$raw" || true
+    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$DATA_DIR/allowlist.raw" || true
     rm -rf "$tmp"
-
-    if [[ ! -s "$raw" ]]; then
-        log "ERROR: allowlist download failed or empty"
-        return 1
+    if [[ ! -s "$DATA_DIR/allowlist.raw" ]]; then
+        log "ERROR: allowlist download failed"; return 1
     fi
 }
 
-download_raw_country() {
-    local raw="$DATA_DIR/country.raw"
-    local tmp="$DATA_DIR/tmp_country"
-    rm -rf "$tmp" && mkdir -p "$tmp"
-
+download_country() {
+    local tmp; tmp=$(mktemp -d)
+    local i=0
     local sources=(
         "https://raw.githubusercontent.com/ipverse/rir-ip/refs/heads/master/country/__CC__/ipv4-aggregated.txt"
         "https://www.ipdeny.com/ipblocks/data/countries/__CC__.zone"
         "https://raw.githubusercontent.com/ebrasha/cidr-ip-ranges-by-country/refs/heads/master/CIDR/__CC__-ipv4-Hackers.Zone.txt"
     )
-
-    local i=0
     for cc in "${ALLOW_COUNTRIES[@]}"; do
         local cc_lower="${cc,,}"
         local cc_upper="${cc^^}"
-        for source_template in "${sources[@]}"; do
-            local url=""
-            if [[ "$source_template" == *"ebrasha"* ]]; then
-                url="${source_template//__CC__/$cc_upper}"
-            else
-                url="${source_template//__CC__/$cc_lower}"
-            fi
-            local file="$tmp/$(printf '%03d' $i)_${cc}_src.txt"
-            curl -sf --connect-timeout 10 --max-time 30 "$url" > "$file" 2>/dev/null &
-            (( i++ )) || true
+        for src in "${sources[@]}"; do
+            local url="${src//__CC__/$cc_lower}"
+            if [[ "$src" == *"ebrasha"* ]]; then url="${src//__CC__/$cc_upper}"; fi
+            curl -sf --connect-timeout 10 --max-time 30 "$url" \
+                > "$tmp/$(printf '%04d' $i)_${cc}.txt" 2>/dev/null &
+            i=$(( i + 1 ))
         done
         if [[ "$cc_upper" == "VN" ]]; then
-            local file="$tmp/$(printf '%03d' $i)_VN_special.txt"
             curl -sf --connect-timeout 10 --max-time 30 \
-                "https://raw.githubusercontent.com/bibicadotnet/IPinfo-VietNam/main/vietnam.txt" > "$file" 2>/dev/null &
-            (( i++ )) || true
+                "https://raw.githubusercontent.com/bibicadotnet/IPinfo-VietNam/main/vietnam.txt" \
+                > "$tmp/$(printf '%04d' $i)_VN_extra.txt" 2>/dev/null &
+            i=$(( i + 1 ))
         fi
     done
     wait
-
-    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$raw" || true
+    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$DATA_DIR/country.raw" || true
     rm -rf "$tmp"
-
-    if [[ ! -s "$raw" ]]; then
-        log "ERROR: country download failed or empty"
-        return 1
+    if [[ ! -s "$DATA_DIR/country.raw" ]]; then
+        log "ERROR: country download failed"; return 1
     fi
 }
 
 # ==============================
-# UPDATE IPSET
+# IPSET UPDATE
+# Skip rebuild when hash unchanged AND ipset has entries
 # ==============================
 update_ipset() {
-    local name="$1"
-    local ipset_name="$2"
-    local ipset_type="$3"
-    local maxelem="$4"
-
+    local name="$1" ipset_name="$2" ipset_type="$3" maxelem="$4"
     local raw="$DATA_DIR/${name}.raw"
-    local hash_file="$HASH_DIR/${name}.raw.hash"
+    local hash_file="$HASH_DIR/${name}.sha256"
     local tmp_name="${ipset_name}_tmp"
 
     log "Downloading $name..."
     if [[ "$name" == "allowlist" ]]; then
-        download_raw_allowlist || return 1
+        download_allowlist || return 1
     else
-        download_raw_country || return 1
+        download_country || return 1
     fi
 
-    local new_hash
+    local new_hash old_hash current_count
     new_hash=$(sha256sum "$raw" | cut -d' ' -f1)
-    local old_hash
     old_hash=$(cat "$hash_file" 2>/dev/null || echo "")
 
-    if [[ "$new_hash" == "$old_hash" ]] && ipset list "$ipset_name" >/dev/null 2>&1; then
-        log "✓ $name unchanged — skip"
+    current_count=0
+    if ipset list "$ipset_name" >/dev/null 2>&1; then
+        current_count=$(ipset list -t "$ipset_name" | awk '/Number of entries:/{print $NF}')
+    fi
+
+    if [[ "$new_hash" == "$old_hash" && "$current_count" -gt 0 ]]; then
+        log "$name: unchanged ($current_count entries), skipping"
         return 0
     fi
 
-    if [[ "$new_hash" == "$old_hash" ]]; then
-        log "⚠ $name hash match but ipset missing — forcing rebuild"
-    else
-        log "$name changed — updating..."
-    fi
-
-    if ! ipset list "$ipset_name" >/dev/null 2>&1; then
-        ipset create "$ipset_name" "$ipset_type" maxelem "$maxelem"
-    fi
-
+    log "$name: rebuilding ipset..."
+    ipset create "$ipset_name" "$ipset_type" maxelem "$maxelem" 2>/dev/null || true
     ipset destroy "$tmp_name" 2>/dev/null || true
-    ipset create "$tmp_name" "$ipset_type" maxelem "$maxelem"
-    awk '{print "add '"$tmp_name"' " $0}' "$raw" | ipset restore -!
+    ipset create  "$tmp_name" "$ipset_type" maxelem "$maxelem"
+    awk -v s="$tmp_name" '{print "add " s " " $0}' "$raw" | ipset restore -!
     ipset swap "$ipset_name" "$tmp_name"
     ipset destroy "$tmp_name"
-
     echo "$new_hash" > "$hash_file"
 
-    local count
-    count=$(ipset list -t "$ipset_name" | awk '/Number of entries:/{print $NF}')
-    log "✓ $name updated: $count entries"
-    return 2
+    local count; count=$(ipset list -t "$ipset_name" | awk '/Number of entries:/{print $NF}')
+    log "$name: $count entries loaded"
 }
 
 update_ipsets() {
-    local allowlist_rc=0 country_rc=0
+    mkdir -p "$DATA_DIR" "$HASH_DIR"
+    update_ipset "allowlist" "$IPSET_ALLOWLIST" "hash:net" "65536"  || true
+    update_ipset "country"   "$IPSET_COUNTRY"   "hash:net" "131072" || true
 
-    update_ipset "allowlist" "$IPSET_ALLOWLIST" "hash:net" "65536"  || allowlist_rc=$?
-    update_ipset "country"   "$IPSET_COUNTRY"   "hash:net" "131072" || country_rc=$?
-
-    if [[ $allowlist_rc -eq 0 && $country_rc -eq 0 ]]; then
-        log "✓ All data unchanged — nothing to do"
+    local count; count=$(ipset list -t "$IPSET_COUNTRY" | awk '/Number of entries:/{print $NF}')
+    if [[ "$count" -eq 0 && "${#ALLOW_COUNTRIES[@]}" -gt 0 ]]; then
+        log "ERROR: country ipset empty — check connectivity"; exit 1
     fi
 }
 
 # ==============================
-# RATE LIMIT HELPER (xt_recent + hashlimit)
-# "If rate > 100/sec, then limit to 10/sec"
+# RATE LIMIT SUB-CHAIN
+#
+# Two-phase logic per IP:
+#   Phase 1 — PENALTY:  if flagged, allow up to THROTTLE_RATE PPS, drop rest
+#   Phase 2 — DETECT:   if traffic > rate PPS, flag IP and drop
+#
+# Placed BEFORE ESTABLISHED: DoT/DoH reuse connections → must count all packets
 # ==============================
 add_rate_limit() {
-    local table="$1"; local chain="$2"; local proto="$3"; local port="$4"; local prefix="$5"
-    local t_flag=""; [[ "$table" == "raw" ]] && t_flag="-t raw"
+    local table="$1" chain="$2" proto="$3" port="$4" prefix="$5" rate="$6"
+    local t_flag=""
+    if [[ "$table" == "raw" ]]; then t_flag="-t raw"; fi
     local sub="RL_${prefix}"
+
     iptables $t_flag -N "$sub" 2>/dev/null || iptables $t_flag -F "$sub"
 
-    # 1. PENALTY CHECK: If flagged, enforce 10/sec cap
-    iptables $t_flag -A "$sub" -m recent --rcheck --seconds "${PENALTY_TIME}" --name "FLOOD_${prefix}" \
-        -m hashlimit --hashlimit-upto "${THROTTLE_RATE}/sec" --hashlimit-burst "${THROTTLE_RATE}" --hashlimit-name "${prefix}_pen" -j RETURN
-    
-    # 2. PENALTY DROP: If flagged and exceeds 10/sec quota
-    iptables $t_flag -A "$sub" -m recent --rcheck --seconds "${PENALTY_TIME}" --name "FLOOD_${prefix}" -j DROP
-    
-    # 3. DETECTION: sustained rate > RATE_LIMIT_PER_SECOND/sec → flag + DROP
-    # burst=RATE_LIMIT_PER_SECOND: allows natural microbursts up to the PPS threshold.
+    iptables $t_flag -A "$sub" -m recent --rcheck --seconds "$PENALTY_TIME" --name "FLOOD_${prefix}" \
+        -m hashlimit --hashlimit-upto "${THROTTLE_RATE}/sec" --hashlimit-burst "$THROTTLE_RATE" \
+        --hashlimit-name "${prefix}_pen" -j RETURN
+    iptables $t_flag -A "$sub" -m recent --rcheck --seconds "$PENALTY_TIME" --name "FLOOD_${prefix}" \
+        -j DROP
+
     iptables $t_flag -A "$sub" \
-        -m hashlimit --hashlimit-above "${RATE_LIMIT_PER_SECOND}/sec" --hashlimit-burst "${RATE_LIMIT_PER_SECOND}" \
+        -m hashlimit --hashlimit-above "${rate}/sec" --hashlimit-burst "$rate" \
         --hashlimit-name "${prefix}_det" \
         -m recent --set --name "FLOOD_${prefix}" -j DROP
 
@@ -425,77 +303,65 @@ add_rate_limit() {
 }
 
 # ==============================
-# BUILD RAW TABLE
-# UDP only: allowlist bypass → hashlimit DROP → NOTRACK valid packets
-# OUTPUT: NOTRACK UDP reply packets
+# RAW TABLE (UDP only)
+#
+# Allowlist bypass → rate limit DROP → NOTRACK
+# NOTRACK skips conntrack entirely → lower CPU for DoQ/DoH3
+# OUTPUT: NOTRACK reply packets too
 # ==============================
 build_raw_table() {
-    iptables -t raw -F PREROUTING
-    iptables -t raw -F OUTPUT
+    iptables -t raw -N "$CHAIN_RAW_IN"  2>/dev/null || iptables -t raw -F "$CHAIN_RAW_IN"
+    iptables -t raw -N "$CHAIN_RAW_OUT" 2>/dev/null || iptables -t raw -F "$CHAIN_RAW_OUT"
+    iptables -t raw -C PREROUTING -j "$CHAIN_RAW_IN"  2>/dev/null \
+        || iptables -t raw -I PREROUTING 1 -j "$CHAIN_RAW_IN"
+    iptables -t raw -C OUTPUT     -j "$CHAIN_RAW_OUT" 2>/dev/null \
+        || iptables -t raw -I OUTPUT     1 -j "$CHAIN_RAW_OUT"
 
     for port in "${ALLOW_UDP_PORTS[@]}"; do
-        # 1. Allowlist bypass
-        iptables -t raw -A PREROUTING -p udp --dport "$port" \
+        iptables -t raw -A "$CHAIN_RAW_IN" -p udp --dport "$port" \
             -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
-
         if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-            # 2. Rate limit — DROP flood before conntrack
-            add_rate_limit "raw" "PREROUTING" "-p udp" "$port" "udp_${port}"
+            add_rate_limit raw "$CHAIN_RAW_IN" "-p udp" "$port" "udp_${port}" "$RATE_LIMIT_UDP"
         fi
-
-        # 3. NOTRACK valid UDP — no conntrack entries → lower CPU for DoQ/DoH3
-        iptables -t raw -A PREROUTING -p udp --dport "$port" -j CT --notrack
-
-        # 4. NOTRACK reply — reply packets also bypass conntrack
-        iptables -t raw -A OUTPUT -p udp --sport "$port" -j CT --notrack
+        iptables -t raw -A "$CHAIN_RAW_IN"  -p udp --dport "$port" -j CT --notrack
+        iptables -t raw -A "$CHAIN_RAW_OUT" -p udp --sport "$port" -j CT --notrack
     done
-
-    log "✓ RAW table built (UDP: hashlimit DROP + NOTRACK)"
+    log "RAW table built (UDP NOTRACK)"
 }
 
 # ==============================
-# BUILD CHAIN_INPUT
+# INPUT CHAIN
 #
-# Rule order:
-#  1. lo → ACCEPT
-#  2. DROP INVALID
-#  3. Docker 172.16.0.0/12 → ACCEPT
-#  4. UNTRACKED + GeoIP → ACCEPT    (UDP NOTRACKed from raw table)
-#  5. ALLOWLIST → ACCEPT            (bypass rate limit)
-#  6. TCP rate limit → DROP         (before ESTABLISHED — counts ALL packets incl. persistent DoT/DoH)
-#  7. ESTABLISHED,RELATED → ACCEPT  (TCP — after rate limit)
-#  8. GEOIP TCP → ACCEPT            (new TCP connections)
-#  9. DROP
+#   1. lo               → ACCEPT
+#   2. INVALID          → DROP
+#   3. Docker 172/12    → ACCEPT
+#   4. UNTRACKED + GeoIP→ ACCEPT  (UDP NOTRACKed in raw table)
+#   5. Allowlist        → ACCEPT  (bypass rate limit)
+#   6. TCP rate limit   → DROP    (before ESTABLISHED — counts all packets)
+#   7. ESTABLISHED      → ACCEPT
+#   8. GeoIP TCP        → ACCEPT
+#   9. Default          → DROP
 # ==============================
-build_chain_input() {
-    local allowlist_count=$1
+build_input_chain() {
+    local allowlist_count="$1"
+    iptables -N "$CHAIN_INPUT" 2>/dev/null || iptables -F "$CHAIN_INPUT"
+    iptables -C INPUT -j "$CHAIN_INPUT" 2>/dev/null \
+        || iptables -I INPUT 1 -j "$CHAIN_INPUT"
 
-    iptables -N "$CHAIN_INPUT" 2>/dev/null || true
-    iptables -F "$CHAIN_INPUT"
-
-    # 1. Loopback
     iptables -A "$CHAIN_INPUT" -i lo -j ACCEPT
-
-    # 2. Drop INVALID
     iptables -A "$CHAIN_INPUT" -m conntrack --ctstate INVALID -j DROP
-
-    # 3. Docker internal
     iptables -A "$CHAIN_INPUT" -s 172.16.0.0/12 -j ACCEPT
 
-    # 4. UNTRACKED UDP + GeoIP — handle NOTRACKed UDP from raw table
     if [[ "$ENABLE_PING" == "true" ]]; then
         iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
-            -m conntrack --ctstate UNTRACKED \
-            -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
+            -m conntrack --ctstate UNTRACKED -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
     fi
     for port in "${ALLOW_UDP_PORTS[@]}"; do
         iptables -A "$CHAIN_INPUT" -p udp --dport "$port" \
-            -m conntrack --ctstate UNTRACKED \
-            -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
+            -m conntrack --ctstate UNTRACKED -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
     done
 
-    # 5. ALLOWLIST — bypass rate limit entirely
-    if [[ $allowlist_count -gt 0 ]]; then
+    if [[ "$allowlist_count" -gt 0 ]]; then
         if [[ "$ENABLE_PING" == "true" ]]; then
             iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
                 -m set --match-set "$IPSET_ALLOWLIST" src -j ACCEPT
@@ -508,59 +374,46 @@ build_chain_input() {
             iptables -A "$CHAIN_INPUT" -p udp --dport "$port" \
                 -m set --match-set "$IPSET_ALLOWLIST" src -j ACCEPT
         done
-        log "✓ INPUT: allowlist rules added"
+        log "INPUT: allowlist rules added ($allowlist_count entries)"
     fi
 
-    # 6. TCP rate limit — BEFORE ESTABLISHED to count all packets incl. persistent connections
-    # No --ctstate NEW: DoT/DoH reuse connections, must count all packets not just new
     if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
         for port in "${ALLOW_TCP_PORTS[@]}"; do
-            add_rate_limit "filter" "$CHAIN_INPUT" "-p tcp" "$port" "tcp_${port}"
+            add_rate_limit filter "$CHAIN_INPUT" "-p tcp" "$port" "tcp_${port}" "$RATE_LIMIT_TCP"
         done
-        log "✓ INPUT: TCP rate limit added (${RATE_LIMIT_PER_SECOND}/sec -> ${THROTTLE_RATE}/sec)"
+        log "INPUT: rate limit TCP=${RATE_LIMIT_TCP}/s → throttle=${THROTTLE_RATE}/s"
     fi
 
-    # 7. ESTABLISHED/RELATED — after rate limit (TCP only meaningful here)
     iptables -A "$CHAIN_INPUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-    # 8. GEOIP TCP — new connections
     for port in "${ALLOW_TCP_PORTS[@]}"; do
         iptables -A "$CHAIN_INPUT" -p tcp --dport "$port" \
             -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
     done
 
-    # 9. DROP
     iptables -A "$CHAIN_INPUT" -j DROP
-
-    log "✓ INPUT chain built"
+    log "INPUT chain built"
 }
 
 # ==============================
-# BUILD CHAIN_DOCKER
-# Same order as INPUT
+# DOCKER CHAIN (mirrors INPUT, uses RETURN instead of ACCEPT)
 # ==============================
-build_chain_docker() {
-    local allowlist_count=$1
+build_docker_chain() {
+    local allowlist_count="$1"
+    iptables -N DOCKER-USER    2>/dev/null || true
+    iptables -N "$CHAIN_DOCKER" 2>/dev/null || iptables -F "$CHAIN_DOCKER"
+    iptables -C DOCKER-USER -j "$CHAIN_DOCKER" 2>/dev/null \
+        || iptables -I DOCKER-USER 1 -j "$CHAIN_DOCKER"
 
-    iptables -N DOCKER-USER 2>/dev/null || true
-    iptables -N "$CHAIN_DOCKER" 2>/dev/null || true
-    iptables -F "$CHAIN_DOCKER"
-
-    # 1. Docker internal
     iptables -A "$CHAIN_DOCKER" -s 172.16.0.0/12 -j RETURN
-
-    # 2. Drop INVALID
     iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate INVALID -j DROP
 
-    # 3. UNTRACKED UDP + GeoIP
     for port in "${ALLOW_UDP_PORTS[@]}"; do
         iptables -A "$CHAIN_DOCKER" -p udp --dport "$port" \
-            -m conntrack --ctstate UNTRACKED \
-            -m set --match-set "$IPSET_COUNTRY" src -j RETURN
+            -m conntrack --ctstate UNTRACKED -m set --match-set "$IPSET_COUNTRY" src -j RETURN
     done
 
-    # 4. ALLOWLIST
-    if [[ $allowlist_count -gt 0 ]]; then
+    if [[ "$allowlist_count" -gt 0 ]]; then
         for port in "${ALLOW_TCP_PORTS[@]}"; do
             iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
                 -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
@@ -571,220 +424,305 @@ build_chain_docker() {
         done
     fi
 
-    # 5. TCP rate limit — before ESTABLISHED
     if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
         for port in "${ALLOW_TCP_PORTS[@]}"; do
-            add_rate_limit "filter" "$CHAIN_DOCKER" "-p tcp" "$port" "docker_tcp_${port}"
+            add_rate_limit filter "$CHAIN_DOCKER" "-p tcp" "$port" "docker_tcp_${port}" "$RATE_LIMIT_TCP"
         done
     fi
 
-    # 6. ESTABLISHED/RELATED — after rate limit
     iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
-    # 7. GEOIP TCP
     for port in "${ALLOW_TCP_PORTS[@]}"; do
         iptables -A "$CHAIN_DOCKER" -p tcp --dport "$port" \
             -m set --match-set "$IPSET_COUNTRY" src -j RETURN
     done
 
-    # 8. DROP
     iptables -A "$CHAIN_DOCKER" -j DROP
-
-    log "✓ Docker chain built"
+    log "Docker chain built"
 }
 
-activate_firewall() {
-    if ! iptables -C INPUT -j "$CHAIN_INPUT" 2>/dev/null; then
-        iptables -I INPUT 1 -j "$CHAIN_INPUT"
-    fi
-
-    if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
-        if ! iptables -C DOCKER-USER -j "$CHAIN_DOCKER" 2>/dev/null; then
-            iptables -I DOCKER-USER 1 -j "$CHAIN_DOCKER" 2>/dev/null || true
-        fi
-        log "✓ Docker protection enabled"
-    fi
-
+save_rules() {
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
-    if command -v netfilter-persistent >/dev/null; then
-        netfilter-persistent save 2>/dev/null || true
-    fi
-    log "✓ Rules saved"
+    command -v netfilter-persistent >/dev/null && netfilter-persistent save 2>/dev/null || true
+    log "Rules saved"
 }
 
 # ==============================
-# MAIN
+# WRITE GEO-FIREWALL.SH
+# This script ONLY updates ipsets — no rule building
+# Called by: cron (daily refresh) + systemd (load ipsets on boot)
 # ==============================
-main() {
-    log "=========================================="
-    log "GeoIP Firewall"
-    log "=========================================="
+write_firewall_script() {
+    # Unquoted heredoc: setup variables expand into the script
+    cat > "$FIREWALL_SCRIPT" << EOF
+#!/bin/bash
+# geo-firewall.sh — re-run setup-geo-firewall.sh to reconfigure.
+# Only updates IP lists. Rules are built by setup and restored on boot by netfilter-persistent.
+set -euo pipefail
 
-    local first_run=false
+# --- CONFIG (baked in by setup-geo-firewall.sh) ---
+ALLOW_COUNTRIES=($(printf '"%s" ' "${ALLOW_COUNTRIES[@]}"))
+ALLOW_TCP_PORTS=($(printf '"%s" ' "${ALLOW_TCP_PORTS[@]}"))
+ALLOW_UDP_PORTS=($(printf '"%s" ' "${ALLOW_UDP_PORTS[@]}"))
+ALLOWLIST_URLS=($(printf '"%s" ' "${ALLOWLIST_URLS[@]}"))
+ALLOWLIST_IPS=($(printf '"%s" ' "${ALLOWLIST_IPS[@]}"))
 
-    if ! iptables -L "$CHAIN_INPUT" -n >/dev/null 2>&1; then
-        first_run=true
-        log "First run — initializing"
+# --- PATHS ---
+INSTALL_DIR="/home/geo-firewall"
+DATA_DIR="\$INSTALL_DIR/data"
+HASH_DIR="\$INSTALL_DIR/hash"
+IPSET_COUNTRY="geo_country"
+IPSET_ALLOWLIST="geo_allowlist"
+CIDR_REGEX='$CIDR_REGEX'
 
-        # Delete hashes to force rebuild after reboot
-        rm -f "$HASH_DIR"/*.hash
+log() { echo "[\$(date '+%Y-%m-%d %H:%M:%S')] \$*"; }
+trap 'log "ERROR at line \$LINENO: \$BASH_COMMAND (exit \$?)"' ERR
+EOF
 
-        ipset create "$IPSET_ALLOWLIST" hash:net maxelem 65536 2>/dev/null || true
-        ipset create "$IPSET_COUNTRY" hash:net maxelem 131072 2>/dev/null || true
+    # Quoted heredoc: functions, no expansion needed
+    cat >> "$FIREWALL_SCRIPT" << 'SCRIPT_EOF'
+
+download_allowlist() {
+    local tmp; tmp=$(mktemp -d)
+    local i=0
+    for ip in "${ALLOWLIST_IPS[@]}"; do
+        if [[ -n "$ip" ]]; then
+            echo "$ip" > "$tmp/$(printf '%04d' $i)_local.txt"
+            i=$(( i + 1 ))
+        fi
+    done
+    for url in "${ALLOWLIST_URLS[@]}"; do
+        if [[ -n "$url" ]]; then
+            curl -sf --connect-timeout 10 --max-time 30 "$url" \
+                > "$tmp/$(printf '%04d' $i)_url.txt" 2>/dev/null &
+            i=$(( i + 1 ))
+        fi
+    done
+    wait
+    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$DATA_DIR/allowlist.raw" || true
+    rm -rf "$tmp"
+    if [[ ! -s "$DATA_DIR/allowlist.raw" ]]; then
+        log "ERROR: allowlist download failed"; return 1
     fi
+}
 
-    update_ipsets
-
-    if [[ "$first_run" == true ]]; then
-        local allowlist_count country_count
-        allowlist_count=$(ipset list -t "$IPSET_ALLOWLIST" | awk '/Number of entries:/{print $NF}')
-        country_count=$(ipset list -t "$IPSET_COUNTRY" | awk '/Number of entries:/{print $NF}')
-
-        if [[ "$country_count" -eq 0 ]]; then
-            log "ERROR: country ipset is empty — aborting to prevent lockout"
-            log "       Check network connectivity and try again"
-            exit 1
+download_country() {
+    local tmp; tmp=$(mktemp -d)
+    local i=0
+    local sources=(
+        "https://raw.githubusercontent.com/ipverse/rir-ip/refs/heads/master/country/__CC__/ipv4-aggregated.txt"
+        "https://www.ipdeny.com/ipblocks/data/countries/__CC__.zone"
+        "https://raw.githubusercontent.com/ebrasha/cidr-ip-ranges-by-country/refs/heads/master/CIDR/__CC__-ipv4-Hackers.Zone.txt"
+    )
+    for cc in "${ALLOW_COUNTRIES[@]}"; do
+        local cc_lower="${cc,,}"
+        local cc_upper="${cc^^}"
+        for src in "${sources[@]}"; do
+            local url="${src//__CC__/$cc_lower}"
+            if [[ "$src" == *"ebrasha"* ]]; then url="${src//__CC__/$cc_upper}"; fi
+            curl -sf --connect-timeout 10 --max-time 30 "$url" \
+                > "$tmp/$(printf '%04d' $i)_${cc}.txt" 2>/dev/null &
+            i=$(( i + 1 ))
+        done
+        if [[ "$cc_upper" == "VN" ]]; then
+            curl -sf --connect-timeout 10 --max-time 30 \
+                "https://raw.githubusercontent.com/bibicadotnet/IPinfo-VietNam/main/vietnam.txt" \
+                > "$tmp/$(printf '%04d' $i)_VN_extra.txt" 2>/dev/null &
+            i=$(( i + 1 ))
         fi
+    done
+    wait
+    cat "$tmp"/*.txt 2>/dev/null | grep -Eo "$CIDR_REGEX" | sort -u > "$DATA_DIR/country.raw" || true
+    rm -rf "$tmp"
+    if [[ ! -s "$DATA_DIR/country.raw" ]]; then
+        log "ERROR: country download failed"; return 1
+    fi
+}
 
-        build_raw_table
-        build_chain_input "$allowlist_count"
+update_ipset() {
+    local name="$1" ipset_name="$2" ipset_type="$3" maxelem="$4"
+    local raw="$DATA_DIR/${name}.raw"
+    local hash_file="$HASH_DIR/${name}.sha256"
+    local tmp_name="${ipset_name}_tmp"
 
-        if command -v docker >/dev/null 2>&1; then
-            build_chain_docker "$allowlist_count"
-        fi
-
-        activate_firewall
-
-        log "=========================================="
-        log "✓ FIREWALL ACTIVE"
-        log "  Countries:   ${ALLOW_COUNTRIES[*]}"
-        log "  TCP Ports:   ${ALLOW_TCP_PORTS[*]}"
-        log "  UDP Ports:   ${ALLOW_UDP_PORTS[*]}"
-        log "  Allowlist:   $allowlist_count entries"
-        log "  Country IPs: $country_count CIDRs"
-        [[ "$ENABLE_RATE_LIMIT" == "true" ]] && log "  Rate Limit:  ${RATE_LIMIT_PER_SECOND}/sec -> ${THROTTLE_RATE}/sec (UDP: raw, TCP: filter)"
-        log "=========================================="
+    log "Downloading $name..."
+    if [[ "$name" == "allowlist" ]]; then
+        download_allowlist || return 1
     else
-        log "✓ Done"
+        download_country || return 1
+    fi
+
+    local new_hash old_hash current_count
+    new_hash=$(sha256sum "$raw" | cut -d' ' -f1)
+    old_hash=$(cat "$hash_file" 2>/dev/null || echo "")
+
+    current_count=0
+    if ipset list "$ipset_name" >/dev/null 2>&1; then
+        current_count=$(ipset list -t "$ipset_name" | awk '/Number of entries:/{print $NF}')
+    fi
+
+    if [[ "$new_hash" == "$old_hash" && "$current_count" -gt 0 ]]; then
+        log "$name: unchanged ($current_count entries), skipping"
+        return 0
+    fi
+
+    log "$name: rebuilding ipset..."
+    ipset create "$ipset_name" "$ipset_type" maxelem "$maxelem" 2>/dev/null || true
+    ipset destroy "$tmp_name" 2>/dev/null || true
+    ipset create  "$tmp_name" "$ipset_type" maxelem "$maxelem"
+    awk -v s="$tmp_name" '{print "add " s " " $0}' "$raw" | ipset restore -!
+    ipset swap "$ipset_name" "$tmp_name"
+    ipset destroy "$tmp_name"
+    echo "$new_hash" > "$hash_file"
+
+    local count; count=$(ipset list -t "$ipset_name" | awk '/Number of entries:/{print $NF}')
+    log "$name: $count entries loaded"
+}
+
+update_ipsets() {
+    mkdir -p "$DATA_DIR" "$HASH_DIR"
+    update_ipset "allowlist" "$IPSET_ALLOWLIST" "hash:net" "65536"  || true
+    update_ipset "country"   "$IPSET_COUNTRY"   "hash:net" "131072" || true
+
+    local count; count=$(ipset list -t "$IPSET_COUNTRY" | awk '/Number of entries:/{print $NF}')
+    if [[ "$count" -eq 0 && "${#ALLOW_COUNTRIES[@]}" -gt 0 ]]; then
+        log "ERROR: country ipset empty — check connectivity"; exit 1
     fi
 }
 
-main
-EOF_MAIN
+log "=== GeoIP Firewall: Updating IPs ==="
+update_ipsets
+log "=== Done ==="
+SCRIPT_EOF
+
+    chmod +x "$FIREWALL_SCRIPT"
+    log "Firewall script written → $FIREWALL_SCRIPT"
+}
 
 # ==============================
-# INJECT CONFIGURATION
+# WRITE EMERGENCY RESET SCRIPT
 # ==============================
-sed -i "/^ALLOW_COUNTRIES=()/ c\ALLOW_COUNTRIES=($(printf '"%s" ' "${ALLOW_COUNTRIES[@]}") )" "$FIREWALL_SCRIPT"
-sed -i "/^ALLOW_TCP_PORTS=()/ c\ALLOW_TCP_PORTS=($(printf '"%s" ' "${ALLOW_TCP_PORTS[@]}") )" "$FIREWALL_SCRIPT"
-sed -i "/^ALLOW_UDP_PORTS=()/ c\ALLOW_UDP_PORTS=($(printf '"%s" ' "${ALLOW_UDP_PORTS[@]}") )" "$FIREWALL_SCRIPT"
-sed -i "/^ALLOWLIST_URLS=()/ c\ALLOWLIST_URLS=($(printf '"%s" ' "${ALLOWLIST_URLS[@]}") )" "$FIREWALL_SCRIPT"
-sed -i "/^ALLOWLIST_IPS=()/ c\ALLOWLIST_IPS=($(printf '"%s" ' "${ALLOWLIST_IPS[@]}") )" "$FIREWALL_SCRIPT"
-sed -i "/^ENABLE_PING=/ c\ENABLE_PING=\"$ENABLE_PING\"" "$FIREWALL_SCRIPT"
-sed -i "/^ENABLE_RATE_LIMIT=/ c\ENABLE_RATE_LIMIT=\"$ENABLE_RATE_LIMIT\"" "$FIREWALL_SCRIPT"
-sed -i "/^RATE_LIMIT_PER_SECOND=/ c\RATE_LIMIT_PER_SECOND=\"$RATE_LIMIT_PER_SECOND\"" "$FIREWALL_SCRIPT"
-sed -i "/^THROTTLE_RATE=/ c\THROTTLE_RATE=\"$THROTTLE_RATE\"" "$FIREWALL_SCRIPT"
-sed -i "/^PENALTY_TIME=/ c\PENALTY_TIME=\"$PENALTY_TIME\"" "$FIREWALL_SCRIPT"
+write_reset_script() {
+    cat > "$RESET_SCRIPT" << 'RESET_EOF'
+#!/bin/bash
+# emergency-reset.sh — wipes all iptables rules and ipsets created by this firewall
+set -euo pipefail
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+log "=== Emergency Reset ==="
 
-chmod +x "$FIREWALL_SCRIPT"
+iptables    -D INPUT       -j GEO_INPUT   2>/dev/null || true
+iptables    -D DOCKER-USER -j GEO_DOCKER  2>/dev/null || true
+iptables -t raw -D PREROUTING -j GEO_RAW_IN  2>/dev/null || true
+iptables -t raw -D OUTPUT     -j GEO_RAW_OUT 2>/dev/null || true
+
+while IFS= read -r chain; do
+    iptables -F "$chain" 2>/dev/null || true
+    iptables -X "$chain" 2>/dev/null || true
+done < <(iptables-save 2>/dev/null | awk -F'[ :]' '/^:(GEO_|RL_)/{print $2}')
+
+while IFS= read -r chain; do
+    iptables -t raw -F "$chain" 2>/dev/null || true
+    iptables -t raw -X "$chain" 2>/dev/null || true
+done < <(iptables -t raw -S 2>/dev/null | awk '/^-N (GEO_|RL_)/{print $2}')
+
+if [[ -d /proc/net/xt_recent ]]; then
+    for f in /proc/net/xt_recent/FLOOD_*; do
+        [[ -f "$f" ]] && echo "/" > "$f" 2>/dev/null || true
+    done
+fi
+
+for s in geo_country geo_allowlist geo_country_tmp geo_allowlist_tmp; do
+    ipset destroy "$s" 2>/dev/null || true
+done
+
+rm -f /etc/sysctl.d/99-geo-firewall.conf
+rm -f /etc/modprobe.d/xt_recent.conf
+rm -rf "$INSTALL_DIR"
+
+log "=== Reset complete — everything cleared ==="
+RESET_EOF
+    chmod +x "$RESET_SCRIPT"
+    log "Reset script written → $RESET_SCRIPT"
+}
 
 # ==============================
-# SETUP SYSTEMD SERVICE
+# SYSTEMD + CRON
 # ==============================
-log "Creating systemd service..."
-
-cat > "$SERVICE_FILE" << EOF
+setup_service() {
+    cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=GeoIP Firewall
-After=network-online.target docker.service
+Description=GeoIP Firewall — update IP lists after boot
+After=network-online.target netfilter-persistent.service docker.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=$FIREWALL_SCRIPT
 RemainAfterExit=yes
-StandardOutput=null
-StandardError=null
+StandardOutput=journal
+StandardError=journal
 TimeoutStartSec=300
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    systemctl daemon-reload
+    systemctl enable geo-firewall.service
+    log "Systemd service installed (enabled on boot)"
 
-systemctl daemon-reload
-systemctl enable geo-firewall.service
-
-# ==============================
-# SETUP CRON JOB
-# ==============================
-log "Setting up cron job..."
-
-(crontab -l 2>/dev/null || true; echo "30 2 * * * /bin/bash $FIREWALL_SCRIPT >/dev/null 2>&1") | crontab -
+    (crontab -l 2>/dev/null | grep -v "$FIREWALL_SCRIPT" || true
+     echo "30 2 * * * /bin/bash $FIREWALL_SCRIPT >/dev/null 2>&1") | crontab -
+    log "Cron job installed (daily 02:30)"
+}
 
 # ==============================
-# FIRST RUN
+# MAIN
 # ==============================
-log "Applying firewall..."
+install_deps
+cleanup_all
+apply_kernel_tuning
+mkdir -p "$INSTALL_DIR"
 
-if "$FIREWALL_SCRIPT"; then
-    log "✓ Setup complete"
-else
-    log "✗ Firewall failed — running emergency reset"
-    "$RESET_SCRIPT"
-    exit 1
+write_firewall_script
+write_reset_script
+
+log "Loading IP lists..."
+update_ipsets
+
+log "Building firewall rules..."
+allowlist_count=$(ipset list -t "$IPSET_ALLOWLIST" | awk '/Number of entries:/{print $NF}')
+build_raw_table
+build_input_chain "$allowlist_count"
+if command -v docker >/dev/null 2>&1; then
+    build_docker_chain "$allowlist_count"
 fi
+save_rules
 
-# ==============================
-# FINAL SUMMARY
-# ==============================
+setup_service
+
 echo ""
-echo "╔════════════════════════════════════════╗"
-echo "║      GEO FIREWALL INSTALLED            ║"
-echo "╚════════════════════════════════════════╝"
+echo "================================================"
+echo "  GEO FIREWALL INSTALLED"
+echo "================================================"
+echo "  Countries  : ${ALLOW_COUNTRIES[*]}"
+echo "  TCP ports  : ${ALLOW_TCP_PORTS[*]}"
+echo "  UDP ports  : ${ALLOW_UDP_PORTS[*]}"
+echo "  Rate limit : UDP=${RATE_LIMIT_UDP}/s  TCP=${RATE_LIMIT_TCP}/s"
+echo "               throttle=${THROTTLE_RATE}/s for ${PENALTY_TIME}s"
 echo ""
-echo "Configuration:"
-echo "  • Countries: ${ALLOW_COUNTRIES[*]}"
-echo "  • TCP ports: ${ALLOW_TCP_PORTS[*]}"
-echo "  • UDP ports: ${ALLOW_UDP_PORTS[*]}"
-echo "  • Allowlist: ${#ALLOWLIST_URLS[@]} URLs, ${#ALLOWLIST_IPS[@]} IPs"
+echo "  Status : systemctl status geo-firewall"
+echo "  Update : $FIREWALL_SCRIPT"
+echo "  Reset  : $RESET_SCRIPT"
 echo ""
-echo "Rule Order:"
-echo "  [raw/PREROUTING — UDP only]"
-echo "  1. Allowlist → RETURN"
-[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  2. hashlimit UDP ${RATE_LIMIT_PER_SECOND}/sec → DROP"
-echo "  3. CT --notrack UDP"
-echo ""
-echo "  [raw/OUTPUT — UDP only]"
-echo "  1. CT --notrack UDP sport"
-echo ""
-echo "  [filter/INPUT]"
-echo "  1. lo → ACCEPT"
-echo "  2. DROP INVALID"
-echo "  3. Docker 172.16.0.0/12 → ACCEPT"
-echo "  4. UNTRACKED + GeoIP → ACCEPT (UDP)"
-echo "  5. Allowlist → ACCEPT"
-[[ "$ENABLE_RATE_LIMIT" == "true" ]] && echo "  6. hashlimit TCP ${RATE_LIMIT_PER_SECOND}/sec → DROP  (before ESTABLISHED)"
-echo "  7. ESTABLISHED/RELATED → ACCEPT"
-echo "  8. GeoIP → ACCEPT (TCP)"
-echo "  9. DROP"
-echo ""
-echo "Kernel Hardening: /etc/sysctl.d/99-geo-firewall.conf"
-echo ""
-echo "Management:"
-echo "  • Status:  systemctl status geo-firewall"
-echo "  • Update:  $FIREWALL_SCRIPT"
-echo "  • Reset:   $RESET_SCRIPT"
-echo ""
-echo "Rate Limit Stats:"
 if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
+    echo "  Rate limit stats:"
     for port in "${ALLOW_UDP_PORTS[@]}"; do
-        echo "  • UDP $port: cat /proc/net/ipt_hashlimit/raw_udp_${port}_limit"
+        echo "    UDP $port : cat /proc/net/ipt_hashlimit/udp_${port}_det"
     done
     for port in "${ALLOW_TCP_PORTS[@]}"; do
-        echo "  • TCP $port: cat /proc/net/ipt_hashlimit/tcp_${port}_limit"
+        echo "    TCP $port : cat /proc/net/ipt_hashlimit/tcp_${port}_det"
     done
+    echo ""
 fi
-echo ""
-
-exit 0
+echo "================================================"
