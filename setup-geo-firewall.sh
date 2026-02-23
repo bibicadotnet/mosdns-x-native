@@ -1,12 +1,6 @@
 #!/bin/bash
 # setup-geo-firewall.sh
-# Run as root to install. Re-run to reconfigure.
-#
-# Architecture:
-#   setup-geo-firewall.sh  — installs everything, builds iptables rules, saves rules.v4
-#   geo-firewall.sh        — ONLY updates ipsets (cron daily + systemd on boot)
-#   netfilter-persistent   — restores rules.v4 on boot
-#   cron                   — runs geo-firewall.sh daily to refresh IP lists
+# GeoIP and Rate Limit protection with Docker support
 
 # ==============================
 # USER CONFIGURATION
@@ -22,15 +16,14 @@ ALLOW_UDP_PORTS=("53" "443" "853")
 # Allow ICMP ping from allowed countries
 ENABLE_PING=false
 
-# Enable rate limiting (DDoS protection)
+# RATE LIMIT CONFIGURATION
+# Rule: If traffic exceeds thresholds, IP is penalized for PENALTY_TIME.
+# UDP is limited to 200 PPS, TCP to 5000 PPS.
 ENABLE_RATE_LIMIT=true
-# Detection threshold (packets/sec) — exceeding this flags the IP
-RATE_LIMIT_UDP=200
-RATE_LIMIT_TCP=200
-# Max packets/sec while IP is penalized
-THROTTLE_RATE=5
-# Penalty duration (seconds) — flagged IPs are throttled for this long
-PENALTY_TIME=5
+RATE_LIMIT_UDP=200   # PPS threshold for UDP
+RATE_LIMIT_TCP=200  # PPS threshold for TCP
+THROTTLE_RATE=5             # PPS limit during penalty phase
+PENALTY_TIME=5              # Penalty duration in seconds
 
 # URLs containing IPs that always bypass all rules
 ALLOWLIST_URLS=(
@@ -638,7 +631,7 @@ done
 
 rm -f /etc/sysctl.d/99-geo-firewall.conf
 rm -f /etc/modprobe.d/xt_recent.conf
-rm -rf "$INSTALL_DIR"
+rm -rf /home/geo-firewall
 
 log "=== Reset complete — everything cleared ==="
 RESET_EOF
