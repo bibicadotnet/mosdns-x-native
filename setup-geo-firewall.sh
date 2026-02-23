@@ -20,10 +20,10 @@ ENABLE_PING=false
 
 # RATE LIMIT CONFIGURATION
 # Rule: If traffic exceeds thresholds, IP is penalized for PENALTY_TIME.
-# UDP is limited to 200 PPS, TCP to 5000 PPS.
+# UDP is limited to 200 PPS, TCP to 500 PPS.
 ENABLE_RATE_LIMIT=true
-RATE_LIMIT_UDP=200   # PPS threshold for UDP
-RATE_LIMIT_TCP=200  # PPS threshold for TCP
+RATE_LIMIT_UDP=200          # PPS threshold for UDP
+RATE_LIMIT_TCP=500          # PPS threshold for TCP
 THROTTLE_RATE=5             # PPS limit during penalty phase
 PENALTY_TIME=5              # Penalty duration in seconds
 
