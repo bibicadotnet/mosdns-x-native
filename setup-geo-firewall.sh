@@ -1,12 +1,6 @@
 #!/bin/bash
-# setup-geo-firewall.sh — V3 Optimized
+# setup-geo-firewall.sh — V3.2 (Per-IP Per-Service Optimized)
 # GeoIP and Rate Limit protection with Docker support
-#
-# Optimizations vs V2:
-#   1. xt_recent replaced by ipset SET target (O(1) hash vs O(n) linked list)
-#   2. TCP rate-limiting moved to raw table (flood dropped BEFORE conntrack)
-#   3. INPUT chain simplified (no rate-limit logic, just GeoIP + ESTABLISHED)
-#   4. Docker chain simplified (rate-limiting handled globally in raw table)
 
 PUBLIC_IP=$(curl -s https://api.ipify.org)
 
@@ -17,32 +11,28 @@ PUBLIC_IP=$(curl -s https://api.ipify.org)
 # Allowed countries (ISO 3166-1 alpha-2 codes)
 ALLOW_COUNTRIES=("VN" "SG" "JP" "HK")
 
-# TCP/UDP ports open to allowed countries
+# Services to be protected (ports open to allowed countries)
 ALLOW_TCP_PORTS=("22" "2224" "53" "443" "853")
 ALLOW_UDP_PORTS=("53" "443" "853")
 
-# Allow ICMP ping from allowed countries
+# Allow ICMP echo-request (ping) from allowed countries
 ENABLE_PING=false
 
-# RATE LIMIT CONFIGURATION
-# Per-IP token bucket: allows sustained traffic up to RATE, with BURST headroom
-# for short spikes (e.g. power restore, browser restart with 100 tabs).
-# If sustained traffic > RATE drains all BURST tokens → IP penalized (THROTTLE_RATE PPS).
+# RATE LIMIT CONFIGURATION (Per-IP Per-Service)
 # Formula: time_to_penalty = BURST / (actual_PPS - RATE)
 ENABLE_RATE_LIMIT=true
-RATE_LIMIT_UDP=250          # Sustained PPS limit per IP (single device peak ~150)
-RATE_LIMIT_TCP=500          # Sustained PPS limit per IP (single device peak ~150)
-BURST_UDP=5000              # Token bucket size — absorbs multi-device NAT spikes without penalty
-BURST_TCP=5000              # Token bucket size — absorbs multi-device NAT spikes without penalty
-THROTTLE_RATE=5             # PPS allowed during penalty (just enough for basic DNS resolution)
-PENALTY_TIME=5              # Penalty duration in seconds (auto-refreshed while flood continues)
+RATE_LIMIT_UDP=250          # Sustained PPS allowed per IP per port
+RATE_LIMIT_TCP=500          # Sustained PPS allowed per IP per port
+BURST_UDP=5000              # Token bucket size — absorbs huge NAT traffic spikes
+BURST_TCP=5000              # Token bucket size — absorbs huge NAT traffic spikes
+THROTTLE_RATE=5             # PPS allowed after an IP is penalized
+PENALTY_TIME=5              # Penalty duration in seconds (auto-refreshed by floods)
 
-# URLs containing IPs that always bypass all rules
+# IPs or URLs that always bypass all GeoIP and Rate-Limit rules
 ALLOWLIST_URLS=(
     "https://hetrixtools.com/resources/uptime-monitor-only-ips.txt"
     "https://www.cloudflare.com/ips-v4/"
 )
-# Static IPs that always bypass all rules
 ALLOWLIST_IPS=("217.15.166.168" "$PUBLIC_IP")
 
 # ==============================
@@ -59,6 +49,7 @@ CHAIN_INPUT="GEO_INPUT"
 CHAIN_DOCKER="GEO_DOCKER"
 CHAIN_RAW_IN="GEO_RAW_IN"
 CHAIN_RAW_OUT="GEO_RAW_OUT"
+
 IPSET_COUNTRY="geo_country"
 IPSET_ALLOWLIST="geo_allowlist"
 CIDR_REGEX='^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\/([0-9]|[12][0-9]|3[0-2]))?$'
@@ -80,7 +71,8 @@ install_deps() {
     log "Installing dependencies..."
     if command -v apt-get >/dev/null; then
         DEBIAN_FRONTEND=noninteractive apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ipset iptables-persistent curl
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            ipset iptables-persistent ipset-persistent curl
     elif command -v yum >/dev/null; then
         yum install -y -q ipset iptables-services curl
     else
@@ -90,7 +82,6 @@ install_deps() {
 
 # ==============================
 # KERNEL HARDENING
-# (xt_recent removed — no longer used)
 # ==============================
 apply_kernel_tuning() {
     log "Applying kernel hardening..."
@@ -140,15 +131,9 @@ cleanup_all() {
         iptables -t raw -X "$chain" 2>/dev/null || true
     done < <(iptables -t raw -S 2>/dev/null | awk '/^-N (GEO_|RL_)/{print $2}')
 
-    # Clean up penalty ipsets (v3) + xt_recent leftovers (v2)
     while IFS= read -r s; do
         ipset destroy "$s" 2>/dev/null || true
     done < <(ipset list -n 2>/dev/null | grep -E '^(geo_|rl_pen_)')
-    if [[ -d /proc/net/xt_recent ]]; then
-        for f in /proc/net/xt_recent/FLOOD_*; do
-            [[ -f "$f" ]] && echo "/" > "$f" 2>/dev/null || true
-        done
-    fi
 
     for s in "$IPSET_COUNTRY" "$IPSET_ALLOWLIST" "${IPSET_COUNTRY}_tmp" "${IPSET_ALLOWLIST}_tmp"; do
         ipset destroy "$s" 2>/dev/null || true
@@ -157,7 +142,7 @@ cleanup_all() {
     crontab -l 2>/dev/null | grep -v "$FIREWALL_SCRIPT" | crontab - 2>/dev/null || true
     rm -f "$SERVICE_FILE"
     rm -f /etc/sysctl.d/99-geo-firewall.conf
-    rm -f /etc/modprobe.d/xt_recent.conf
+    rm -f /etc/iptables/ipsets.rules
     rm -rf "$INSTALL_DIR"
 
     systemctl daemon-reload 2>/dev/null || true
@@ -166,8 +151,6 @@ cleanup_all() {
 
 # ==============================
 # DOWNLOAD
-# Downloads save raw concatenated data (no grep/sort)
-# Expensive regex parsing only runs when data changes
 # ==============================
 download_allowlist() {
     local tmp; tmp=$(mktemp -d)
@@ -228,7 +211,6 @@ download_country() {
 
 # ==============================
 # IPSET UPDATE
-# Hash raw download BEFORE expensive grep → zero CPU when unchanged
 # ==============================
 update_ipset() {
     local name="$1" ipset_name="$2" ipset_type="$3" maxelem="$4"
@@ -244,7 +226,6 @@ update_ipset() {
         download_country || return 1
     fi
 
-    # Hash raw downloaded data (fast — no regex)
     local new_hash old_hash current_count
     new_hash=$(sha256sum "$concat" | cut -d' ' -f1)
     old_hash=$(cat "$hash_file" 2>/dev/null || echo "")
@@ -260,7 +241,6 @@ update_ipset() {
         return 0
     fi
 
-    # Data changed or ipset empty → run expensive grep + sort
     log "$name: processing new data..."
     grep -Eo "$CIDR_REGEX" "$concat" | sort -u > "$raw" || true
     rm -f "$concat"
@@ -294,10 +274,7 @@ update_ipsets() {
 }
 
 # ==============================
-# PENALTY IPSETS (replaces xt_recent)
-#
-# One ipset per port per protocol with auto-expiring timeout.
-# ipset hash:ip lookup is O(1) vs xt_recent O(n) linked list.
+# PENALTY IPSETS
 # ==============================
 create_penalty_ipsets() {
     log "Creating penalty ipsets..."
@@ -312,15 +289,7 @@ create_penalty_ipsets() {
 }
 
 # ==============================
-# RATE LIMIT SUB-CHAIN (V3 — ipset penalty)
-#
-# Same two-phase logic as V2:
-#   Phase 1 — PENALTY:  if flagged in ipset, throttle to THROTTLE_RATE PPS
-#   Phase 2 — DETECT:   if traffic > rate PPS, flag IP via SET target, DROP
-#
-# Differences from V2:
-#   - ipset SET target replaces xt_recent (O(1) hash vs O(n) list)
-#   - All rate limiting in raw table (TCP flood dropped before conntrack)
+# RATE LIMIT SUB-CHAIN
 # ==============================
 add_rate_limit() {
     local chain="$1" proto="$2" port="$3" rate="$4" burst="$5"
@@ -330,14 +299,9 @@ add_rate_limit() {
 
     iptables -t raw -N "$sub" 2>/dev/null || iptables -t raw -F "$sub"
 
-    # Phase 1 — PENALTY: penalized IP, allow up to THROTTLE_RATE PPS
     iptables -t raw -A "$sub" -m set --match-set "$pen_set" src \
         -m hashlimit --hashlimit-upto "${THROTTLE_RATE}/sec" --hashlimit-burst "$THROTTLE_RATE" \
         --hashlimit-name "${prefix}_pen" --hashlimit-mode srcip -j RETURN
-    # Over throttle → refresh penalty if traffic still significant
-    # THROTTLE_RATE*2 (=10): low enough to catch QUIC/TCP congestion backoff (~30 PPS),
-    # high enough that normal post-flood traffic (~5 PPS) won't keep penalty alive.
-    # Scaled down from *10 because BURST is 5-10x larger than original (burst=rate).
     local refresh_threshold=$(( THROTTLE_RATE * 10 ))
     iptables -t raw -A "$sub" -m set --match-set "$pen_set" src \
         -m hashlimit --hashlimit-above "${refresh_threshold}/sec" --hashlimit-burst "$refresh_threshold" \
@@ -345,34 +309,19 @@ add_rate_limit() {
         -j SET --add-set "$pen_set" src --exist
     iptables -t raw -A "$sub" -m set --match-set "$pen_set" src -j DROP
 
-    # Phase 2 — DETECT: over rate limit → add to penalty ipset, then DROP
-    # burst = token bucket size: allows short-term spikes (power restore)
-    # while catching sustained overload (benchmark/DDoS)
     iptables -t raw -A "$sub" \
         -m hashlimit --hashlimit-above "${rate}/sec" --hashlimit-burst "$burst" \
         --hashlimit-name "${prefix}_det" --hashlimit-mode srcip \
         -j SET --add-set "$pen_set" src --exist
     iptables -t raw -A "$sub" -m set --match-set "$pen_set" src -j DROP
 
-    # Under limit → RETURN (continue processing)
     iptables -t raw -A "$sub" -j RETURN
 
-    # Hook sub-chain into parent
     iptables -t raw -A "$chain" -p "$proto" --dport "$port" -j "$sub"
 }
 
 # ==============================
-# RAW TABLE (UDP + TCP)
-#
-# V3: Both UDP and TCP rate-limited here.
-# TCP flood dropped BEFORE conntrack allocation → major CPU savings.
-# UDP: NOTRACK as before.
-# TCP: kept tracked (conntrack) for Docker DNAT compatibility.
-#
-# Flow per protocol:
-#   Allowlist → RETURN/NOTRACK (bypass rate limit)
-#   Rate limit sub-chain → DROP floods
-#   UDP only: CT --notrack
+# RAW TABLE
 # ==============================
 build_raw_table() {
     iptables -t raw -N "$CHAIN_RAW_IN"  2>/dev/null || iptables -t raw -F "$CHAIN_RAW_IN"
@@ -382,7 +331,6 @@ build_raw_table() {
     iptables -t raw -C OUTPUT     -j "$CHAIN_RAW_OUT" 2>/dev/null \
         || iptables -t raw -I OUTPUT     1 -j "$CHAIN_RAW_OUT"
 
-    # --- UDP ---
     for port in "${ALLOW_UDP_PORTS[@]}"; do
         iptables -t raw -A "$CHAIN_RAW_IN" -p udp --dport "$port" \
             -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
@@ -393,31 +341,19 @@ build_raw_table() {
         iptables -t raw -A "$CHAIN_RAW_OUT" -p udp --sport "$port" -j CT --notrack
     done
 
-    # --- TCP (NEW in V3) ---
     for port in "${ALLOW_TCP_PORTS[@]}"; do
         iptables -t raw -A "$CHAIN_RAW_IN" -p tcp --dport "$port" \
             -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
         if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
             add_rate_limit "$CHAIN_RAW_IN" "tcp" "$port" "$RATE_LIMIT_TCP" "$BURST_TCP"
         fi
-        # TCP: NO notrack — keep conntrack for Docker DNAT + ESTABLISHED fast-path
     done
 
     log "RAW table built (UDP NOTRACK + TCP rate-limit in raw)"
 }
 
 # ==============================
-# INPUT CHAIN (V3 — simplified)
-#
-# Rate limiting is now in raw table, so INPUT is clean:
-#   1. lo               → ACCEPT
-#   2. INVALID          → DROP
-#   3. Docker 172/12    → ACCEPT
-#   4. UNTRACKED + GeoIP→ ACCEPT  (UDP NOTRACKed in raw)
-#   5. Allowlist        → ACCEPT
-#   6. ESTABLISHED      → ACCEPT  (TCP, already rate-limited in raw)
-#   7. GeoIP TCP NEW    → ACCEPT
-#   8. Default          → DROP
+# INPUT CHAIN
 # ==============================
 build_input_chain() {
     local allowlist_count="$1"
@@ -429,9 +365,10 @@ build_input_chain() {
     iptables -A "$CHAIN_INPUT" -m conntrack --ctstate INVALID -j DROP
     iptables -A "$CHAIN_INPUT" -s 172.16.0.0/12 -j ACCEPT
 
+    # ICMP is not CT --notrack in raw table → ctstate = NEW, not UNTRACKED
     if [[ "$ENABLE_PING" == "true" ]]; then
         iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
-            -m conntrack --ctstate UNTRACKED -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
+            -m conntrack --ctstate NEW -m set --match-set "$IPSET_COUNTRY" src -j ACCEPT
     fi
     for port in "${ALLOW_UDP_PORTS[@]}"; do
         iptables -A "$CHAIN_INPUT" -p udp --dport "$port" \
@@ -439,10 +376,9 @@ build_input_chain() {
     done
 
     if [[ "$allowlist_count" -gt 0 ]]; then
-        if [[ "$ENABLE_PING" == "true" ]]; then
-            iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
-                -m set --match-set "$IPSET_ALLOWLIST" src -j ACCEPT
-        fi
+        # Allowlist ICMP separate from ENABLE_PING — monitoring tools are always allowed to ping
+        iptables -A "$CHAIN_INPUT" -p icmp --icmp-type echo-request \
+            -m conntrack --ctstate NEW -m set --match-set "$IPSET_ALLOWLIST" src -j ACCEPT
         for port in "${ALLOW_TCP_PORTS[@]}"; do
             iptables -A "$CHAIN_INPUT" -p tcp --dport "$port" \
                 -m set --match-set "$IPSET_ALLOWLIST" src -j ACCEPT
@@ -454,7 +390,6 @@ build_input_chain() {
         log "INPUT: allowlist rules added ($allowlist_count entries)"
     fi
 
-    # ESTABLISHED moved up — no rate-limit needed here (already done in raw table)
     iptables -A "$CHAIN_INPUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
     for port in "${ALLOW_TCP_PORTS[@]}"; do
@@ -467,7 +402,7 @@ build_input_chain() {
 }
 
 # ==============================
-# DOCKER CHAIN (V3 — simplified, no rate limiting)
+# DOCKER CHAIN
 # ==============================
 build_docker_chain() {
     local allowlist_count="$1"
@@ -495,7 +430,6 @@ build_docker_chain() {
         done
     fi
 
-    # No rate-limit here — handled in raw table for all traffic
     iptables -A "$CHAIN_DOCKER" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
     for port in "${ALLOW_TCP_PORTS[@]}"; do
@@ -507,22 +441,24 @@ build_docker_chain() {
     log "Docker chain built"
 }
 
+# ==============================
+# SAVE RULES
+# ==============================
 save_rules() {
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
+    ipset save > /etc/iptables/ipsets.rules
     command -v netfilter-persistent >/dev/null && netfilter-persistent save 2>/dev/null || true
-    log "Rules saved"
+    log "Rules saved (iptables + ipsets)"
 }
 
 # ==============================
 # WRITE GEO-FIREWALL.SH
-# Updates ipsets + ensures penalty ipsets exist
-# Called by: cron (daily refresh) + systemd (boot)
 # ==============================
 write_firewall_script() {
     cat > "$FIREWALL_SCRIPT" << EOF
 #!/bin/bash
-# geo-firewall.sh — V3. Re-run setup script to reconfigure.
+# geo-firewall.sh — V3.2
 # Updates IP lists + ensures penalty ipsets exist.
 set -euo pipefail
 
@@ -532,8 +468,6 @@ ALLOW_TCP_PORTS=($(printf '"%s" ' "${ALLOW_TCP_PORTS[@]}"))
 ALLOW_UDP_PORTS=($(printf '"%s" ' "${ALLOW_UDP_PORTS[@]}"))
 ALLOWLIST_URLS=($(printf '"%s" ' "${ALLOWLIST_URLS[@]}"))
 ALLOWLIST_IPS=($(printf '"%s" ' "${ALLOWLIST_IPS[@]}"))
-BURST_UDP=$BURST_UDP
-BURST_TCP=$BURST_TCP
 PENALTY_TIME=$PENALTY_TIME
 
 # --- PATHS ---
@@ -623,7 +557,6 @@ update_ipset() {
         download_country || return 1
     fi
 
-    # Hash raw downloaded data (fast — no regex)
     local new_hash old_hash current_count
     new_hash=$(sha256sum "$concat" | cut -d' ' -f1)
     old_hash=$(cat "$hash_file" 2>/dev/null || echo "")
@@ -639,7 +572,6 @@ update_ipset() {
         return 0
     fi
 
-    # Data changed or ipset empty → run expensive grep + sort
     log "$name: processing new data..."
     grep -Eo "$CIDR_REGEX" "$concat" | sort -u > "$raw" || true
     rm -f "$concat"
@@ -672,7 +604,6 @@ update_ipsets() {
     fi
 }
 
-# Ensure penalty ipsets exist (referenced by iptables rules)
 ensure_penalty_ipsets() {
     for port in "${ALLOW_UDP_PORTS[@]}"; do
         ipset create "rl_pen_udp_${port}" hash:ip timeout "$PENALTY_TIME" maxelem 65536 2>/dev/null || true
@@ -682,7 +613,7 @@ ensure_penalty_ipsets() {
     done
 }
 
-log "=== GeoIP Firewall V3: Updating IPs ==="
+log "=== GeoIP Firewall V3.2: Updating IPs ==="
 ensure_penalty_ipsets
 update_ipsets
 log "=== Done ==="
@@ -703,6 +634,9 @@ set -euo pipefail
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 log "=== Emergency Reset ==="
 
+systemctl stop    geo-firewall.service 2>/dev/null || true
+systemctl disable geo-firewall.service 2>/dev/null || true
+
 iptables    -D INPUT       -j GEO_INPUT   2>/dev/null || true
 iptables    -D DOCKER-USER -j GEO_DOCKER  2>/dev/null || true
 iptables -t raw -D PREROUTING -j GEO_RAW_IN  2>/dev/null || true
@@ -718,21 +652,16 @@ while IFS= read -r chain; do
     iptables -t raw -X "$chain" 2>/dev/null || true
 done < <(iptables -t raw -S 2>/dev/null | awk '/^-N (GEO_|RL_)/{print $2}')
 
-# Clean up all geo/rl ipsets (penalty + geo + tmp)
 while IFS= read -r s; do
     ipset destroy "$s" 2>/dev/null || true
 done < <(ipset list -n 2>/dev/null | grep -E '^(geo_|rl_pen_)')
 
-# Legacy xt_recent cleanup
-if [[ -d /proc/net/xt_recent ]]; then
-    for f in /proc/net/xt_recent/FLOOD_*; do
-        [[ -f "$f" ]] && echo "/" > "$f" 2>/dev/null || true
-    done
-fi
-
 rm -f /etc/sysctl.d/99-geo-firewall.conf
-rm -f /etc/modprobe.d/xt_recent.conf
+rm -f /etc/iptables/ipsets.rules
+rm -f /etc/systemd/system/geo-firewall.service
 rm -rf /home/geo-firewall
+
+systemctl daemon-reload 2>/dev/null || true
 
 log "=== Reset complete — everything cleared ==="
 RESET_EOF
@@ -746,7 +675,7 @@ RESET_EOF
 setup_service() {
     cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=GeoIP Firewall V3 — update IP lists after boot
+Description=GeoIP Firewall V3.2 — update IP lists after boot
 After=network-online.target netfilter-persistent.service docker.service
 Wants=network-online.target
 
@@ -800,17 +729,15 @@ setup_service
 
 echo ""
 echo "================================================"
-echo "  GEO FIREWALL V3 INSTALLED"
+echo "  GEO FIREWALL V3.2 (PER-SERVICE OPTIMIZED)"
 echo "================================================"
 echo "  Countries  : ${ALLOW_COUNTRIES[*]}"
 echo "  TCP ports  : ${ALLOW_TCP_PORTS[*]}"
 echo "  UDP ports  : ${ALLOW_UDP_PORTS[*]}"
-echo "  Rate limit : UDP=${RATE_LIMIT_UDP}/s (burst ${BURST_UDP})  TCP=${RATE_LIMIT_TCP}/s (burst ${BURST_TCP})"
-echo "               throttle=${THROTTLE_RATE}/s for ${PENALTY_TIME}s"
+echo "  Rate limit : IP_UDP=${RATE_LIMIT_UDP}/s  IP_TCP=${RATE_LIMIT_TCP}/s (Per Port)"
+echo "  NAT Burst  : ${BURST_UDP} (Per Service)"
+echo "  Throttle   : ${THROTTLE_RATE}/s for ${PENALTY_TIME}s"
 echo ""
-echo "  Optimizations:"
-echo "    - xt_recent → ipset SET (O(1) penalty lookup)"
-echo "    - TCP rate-limit in raw table (flood dropped before conntrack)"
 echo ""
 echo "  Status : systemctl status geo-firewall"
 echo "  Update : $FIREWALL_SCRIPT"
