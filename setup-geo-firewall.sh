@@ -25,11 +25,17 @@ ALLOW_UDP_PORTS=("53" "443" "853")
 ENABLE_PING=false
 
 # RATE LIMIT CONFIGURATION
+# Per-IP token bucket: allows sustained traffic up to RATE, with BURST headroom
+# for short spikes (e.g. power restore, browser restart with 100 tabs).
+# If sustained traffic > RATE drains all BURST tokens → IP penalized (THROTTLE_RATE PPS).
+# Formula: time_to_penalty = BURST / (actual_PPS - RATE)
 ENABLE_RATE_LIMIT=true
-RATE_LIMIT_UDP=200          # PPS threshold for UDP
-RATE_LIMIT_TCP=500          # PPS threshold for TCP
-THROTTLE_RATE=5             # PPS limit during penalty phase
-PENALTY_TIME=5              # Penalty duration in seconds (resets while flood continues)
+RATE_LIMIT_UDP=250          # Sustained PPS limit per IP (single device peak ~150)
+RATE_LIMIT_TCP=500          # Sustained PPS limit per IP (single device peak ~150)
+BURST_UDP=5000              # Token bucket size — absorbs multi-device NAT spikes without penalty
+BURST_TCP=5000              # Token bucket size — absorbs multi-device NAT spikes without penalty
+THROTTLE_RATE=5             # PPS allowed during penalty (just enough for basic DNS resolution)
+PENALTY_TIME=5              # Penalty duration in seconds (auto-refreshed while flood continues)
 
 # URLs containing IPs that always bypass all rules
 ALLOWLIST_URLS=(
@@ -317,7 +323,7 @@ create_penalty_ipsets() {
 #   - All rate limiting in raw table (TCP flood dropped before conntrack)
 # ==============================
 add_rate_limit() {
-    local chain="$1" proto="$2" port="$3" rate="$4"
+    local chain="$1" proto="$2" port="$3" rate="$4" burst="$5"
     local prefix="${proto}_${port}"
     local pen_set="rl_pen_${prefix}"
     local sub="RL_${prefix}"
@@ -328,9 +334,10 @@ add_rate_limit() {
     iptables -t raw -A "$sub" -m set --match-set "$pen_set" src \
         -m hashlimit --hashlimit-upto "${THROTTLE_RATE}/sec" --hashlimit-burst "$THROTTLE_RATE" \
         --hashlimit-name "${prefix}_pen" --hashlimit-mode srcip -j RETURN
-    # Over throttle → refresh penalty timer ONLY if traffic is still high
-    # Threshold: THROTTLE_RATE*10 (50 PPS) filters out TCP retransmissions (~10-20 PPS)
-    # while still catching real floods (1000+ PPS)
+    # Over throttle → refresh penalty if traffic still significant
+    # THROTTLE_RATE*2 (=10): low enough to catch QUIC/TCP congestion backoff (~30 PPS),
+    # high enough that normal post-flood traffic (~5 PPS) won't keep penalty alive.
+    # Scaled down from *10 because BURST is 5-10x larger than original (burst=rate).
     local refresh_threshold=$(( THROTTLE_RATE * 10 ))
     iptables -t raw -A "$sub" -m set --match-set "$pen_set" src \
         -m hashlimit --hashlimit-above "${refresh_threshold}/sec" --hashlimit-burst "$refresh_threshold" \
@@ -338,9 +345,11 @@ add_rate_limit() {
         -j SET --add-set "$pen_set" src --exist
     iptables -t raw -A "$sub" -m set --match-set "$pen_set" src -j DROP
 
-    # Phase 2 — DETECT: over limit → add to penalty ipset (non-terminating), then DROP
+    # Phase 2 — DETECT: over rate limit → add to penalty ipset, then DROP
+    # burst = token bucket size: allows short-term spikes (power restore)
+    # while catching sustained overload (benchmark/DDoS)
     iptables -t raw -A "$sub" \
-        -m hashlimit --hashlimit-above "${rate}/sec" --hashlimit-burst "$rate" \
+        -m hashlimit --hashlimit-above "${rate}/sec" --hashlimit-burst "$burst" \
         --hashlimit-name "${prefix}_det" --hashlimit-mode srcip \
         -j SET --add-set "$pen_set" src --exist
     iptables -t raw -A "$sub" -m set --match-set "$pen_set" src -j DROP
@@ -378,7 +387,7 @@ build_raw_table() {
         iptables -t raw -A "$CHAIN_RAW_IN" -p udp --dport "$port" \
             -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
         if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-            add_rate_limit "$CHAIN_RAW_IN" "udp" "$port" "$RATE_LIMIT_UDP"
+            add_rate_limit "$CHAIN_RAW_IN" "udp" "$port" "$RATE_LIMIT_UDP" "$BURST_UDP"
         fi
         iptables -t raw -A "$CHAIN_RAW_IN"  -p udp --dport "$port" -j CT --notrack
         iptables -t raw -A "$CHAIN_RAW_OUT" -p udp --sport "$port" -j CT --notrack
@@ -389,7 +398,7 @@ build_raw_table() {
         iptables -t raw -A "$CHAIN_RAW_IN" -p tcp --dport "$port" \
             -m set --match-set "$IPSET_ALLOWLIST" src -j RETURN
         if [[ "$ENABLE_RATE_LIMIT" == "true" ]]; then
-            add_rate_limit "$CHAIN_RAW_IN" "tcp" "$port" "$RATE_LIMIT_TCP"
+            add_rate_limit "$CHAIN_RAW_IN" "tcp" "$port" "$RATE_LIMIT_TCP" "$BURST_TCP"
         fi
         # TCP: NO notrack — keep conntrack for Docker DNAT + ESTABLISHED fast-path
     done
@@ -523,6 +532,8 @@ ALLOW_TCP_PORTS=($(printf '"%s" ' "${ALLOW_TCP_PORTS[@]}"))
 ALLOW_UDP_PORTS=($(printf '"%s" ' "${ALLOW_UDP_PORTS[@]}"))
 ALLOWLIST_URLS=($(printf '"%s" ' "${ALLOWLIST_URLS[@]}"))
 ALLOWLIST_IPS=($(printf '"%s" ' "${ALLOWLIST_IPS[@]}"))
+BURST_UDP=$BURST_UDP
+BURST_TCP=$BURST_TCP
 PENALTY_TIME=$PENALTY_TIME
 
 # --- PATHS ---
@@ -794,7 +805,7 @@ echo "================================================"
 echo "  Countries  : ${ALLOW_COUNTRIES[*]}"
 echo "  TCP ports  : ${ALLOW_TCP_PORTS[*]}"
 echo "  UDP ports  : ${ALLOW_UDP_PORTS[*]}"
-echo "  Rate limit : UDP=${RATE_LIMIT_UDP}/s  TCP=${RATE_LIMIT_TCP}/s"
+echo "  Rate limit : UDP=${RATE_LIMIT_UDP}/s (burst ${BURST_UDP})  TCP=${RATE_LIMIT_TCP}/s (burst ${BURST_TCP})"
 echo "               throttle=${THROTTLE_RATE}/s for ${PENALTY_TIME}s"
 echo ""
 echo "  Optimizations:"
