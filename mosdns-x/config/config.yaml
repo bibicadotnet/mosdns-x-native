@@ -249,7 +249,7 @@ plugins:
       lazy_cache_reply_ttl: 5
       cleaner_interval: 68
 
-  # ==========================================================================
+# ==========================================================================
   # UPSTREAM RESOLVERS
   # ==========================================================================
   
@@ -356,7 +356,7 @@ plugins:
                   exec:
                     - _return
             - _limit_2_ips
-            - ttl_short
+            #- ttl_short
             - _no_cname
             - _return
 
@@ -373,7 +373,7 @@ plugins:
                   exec:
                     - _return
             - _limit_2_ips
-            - ttl_short
+            #- ttl_short
             - _no_cname
             - _return
 
@@ -389,7 +389,7 @@ plugins:
                   exec:
                     - _return
             - _limit_2_ips
-            - ttl_short
+            #- ttl_short
             - _no_cname
             - _return
 
@@ -421,13 +421,13 @@ plugins:
                     - _return
             - cdn_list_exporter
             - _limit_2_ips
-            - ttl_short
+            #- ttl_short
             - _no_cname
             - _return
 
         # Final adjustments for "Everything else" (non-CDN responses from Cloudflare)
         - _limit_2_ips
-        - ttl_short
+        #- ttl_short
         - _no_cname
 
 # ============================================================================
