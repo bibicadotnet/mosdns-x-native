@@ -249,7 +249,7 @@ plugins:
       lazy_cache_reply_ttl: 5
       cleaner_interval: 68
 
-# ==========================================================================
+  # ==========================================================================
   # UPSTREAM RESOLVERS
   # ==========================================================================
   
@@ -289,28 +289,21 @@ plugins:
         - addr: "https://dns.mullvad.net/dns-query"
           dial_addr: "194.242.2.2"
 
-  # ==========================================================================
-  # MAIN SEQUENCE - DNS Query Processing Pipeline
-  # ==========================================================================
+# ==========================================================================
+# MAIN SEQUENCE - DNS Query Processing Pipeline
+# ==========================================================================
   
   - tag: main
     type: sequence
     args:
       exec:
 
-        # Note: Reject Qtypes (ANY, AAAA, PTR, HTTPS), common human typing 
-        # errors, and basic validation (_misc_optm) are now handled 
-        # natively in entry_handler.go for maximum performance.
+        # Note: Pre-processing (Strip EDNS0, Block ANY/AAAA/PTR/HTTPS, 
+        # Domain validation, and Lowercase conversion) are now handled 
+        # NATIVELY at the server level for maximum performance
         
         # ====================================================================
-        # PHASE 1: Packet Pre-processing
-        # ====================================================================
-
-        # Strip EDNS0 / ECS early to ensure clean packets for all matchers
-        - _edns0_filter_no_edns0
-
-        # ====================================================================
-        # PHASE 2: Policy Enforcement
+        # PHASE 1: Policy Enforcement
         # ====================================================================
 
         # Block Private TLDs (.local, .lan, etc.)
@@ -328,14 +321,14 @@ plugins:
                 - _return
 
         # ====================================================================
-        # PHASE 3: Final Processing
+        # PHASE 2: Local Processing
         # ====================================================================
 
         # Apply DNS rewrites (local overrides)
         - dns_redirect
 
         # ====================================================================
-        # PHASE 4: Query Logging & Routing
+        # PHASE 3: Query Logging & Routing
         # ====================================================================
         
         #- _query_summary
@@ -404,7 +397,7 @@ plugins:
                 - _return
 
         # ====================================================================
-        # PHASE 5: CDN Detection & Re-resolution
+        # PHASE 4: CDN Detection & Re-resolution
         # ====================================================================
 
         # Re-resolve if response has CDN CNAME OR any CDN IP (CloudFront/Fastly/BunnyCDN/Gcore)
@@ -437,9 +430,10 @@ servers:
   - exec: main
     # Early blocking options
     block_aaaa: false      # Block IPv6 AAAA (28) queries
-    block_ptr: true       # Block Reverse DNS PTR (12) queries
-    block_https: true     # Block HTTPS (65) type queries
-    block_no_dot: true    # Block domains without a dot
+    block_ptr: true        # Block Reverse DNS PTR (12) queries
+    block_https: true      # Block HTTPS (65) type queries
+    block_no_dot: true     # Block domains without a dot
+    strip_edns0: true      # Strip EDNS0 before processing
 
     listeners:
       # DNS-over-UDP
