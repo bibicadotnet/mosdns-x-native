@@ -6,12 +6,11 @@
 # ============================================================================
 # LOGGING & DIAGNOSTICS
 # ============================================================================
-log:
-  level: error	# Options: debug, info, error, warn
-  file: "log/mosdns.log"
 
-api:
-    http: "127.0.0.1:9080"
+#log:
+#  level: error	# Options: debug, info, error, warn
+#  file: "log/mosdns.log"
+
 # ============================================================================
 # DATA PROVIDERS - External domain lists and rules
 # ============================================================================
@@ -153,11 +152,6 @@ plugins:
       ip:
         - "provider:gcore_ips"
 
-  - tag: response_server_failed
-    type: response_matcher
-    args:
-      rcode: [2] # SERVFAIL
-
   # ==========================================================================
   # RESPONSE MODIFIERS
   # ==========================================================================
@@ -166,7 +160,6 @@ plugins:
     type: ttl
     args:
       minimal_ttl: 60
-      maximum_ttl: 300
 
   # Ad-blocking blackhole (NULL IP response)
   - tag: black_hole
@@ -331,7 +324,7 @@ plugins:
         # PHASE 3: Query Logging & Routing
         # ====================================================================
         
-        #- _query_summary
+    #    - _query_summary
 
         # Route: Google domains → Google DNS (with conditional ECS)
         - if: match_google_domain
@@ -342,14 +335,8 @@ plugins:
                 - ecs_handler
             - google_cache
             - upstream_google
-            - if: response_server_failed
-              exec:
-                - upstream_google
-                - if: response_server_failed
-                  exec:
-                    - _return
             - _limit_2_ips
-            #- ttl_short
+            - ttl_short
             - _no_cname
             - _return
 
@@ -359,14 +346,8 @@ plugins:
             - ecs_handler
             - cdn_direct_cache
             - upstream_cloudflare_gateway
-            - if: response_server_failed
-              exec:
-                - upstream_cloudflare_gateway
-                - if: response_server_failed
-                  exec:
-                    - _return
             - _limit_2_ips
-            #- ttl_short
+            - ttl_short
             - _no_cname
             - _return
 
@@ -375,26 +356,14 @@ plugins:
           exec:
             - mullvad_cache
             - upstream_mullvad
-            - if: response_server_failed
-              exec:
-                - upstream_mullvad
-                - if: response_server_failed
-                  exec:
-                    - _return
             - _limit_2_ips
-            #- ttl_short
+            - ttl_short
             - _no_cname
             - _return
 
         # Route: Everything else → Cloudflare DNS (default)
         - cloudflare_cache
         - upstream_cloudflare
-        - if: response_server_failed
-          exec:
-            - upstream_cloudflare
-            - if: response_server_failed
-              exec:
-                - _return
 
         # ====================================================================
         # PHASE 4: CDN Detection & Re-resolution
@@ -406,21 +375,15 @@ plugins:
             - ecs_handler
             - cdn_cname_cache
             - upstream_cloudflare_gateway
-            - if: response_server_failed
-              exec:
-                - upstream_cloudflare_gateway
-                - if: response_server_failed
-                  exec:
-                    - _return
             - cdn_list_exporter
             - _limit_2_ips
-            #- ttl_short
+            - ttl_short
             - _no_cname
             - _return
 
         # Final adjustments for "Everything else" (non-CDN responses from Cloudflare)
         - _limit_2_ips
-        #- ttl_short
+        - ttl_short
         - _no_cname
 
 # ============================================================================
@@ -477,3 +440,6 @@ servers:
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
+
+#api:
+#    http: "0.0.0.0:9080"
