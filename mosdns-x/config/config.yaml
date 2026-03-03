@@ -8,9 +8,11 @@
 # ============================================================================
 
 #log:
-#  level: error	# Options: debug, info, error, warn
+#  level: info	# Options: debug, info, error, warn
 #  file: "log/mosdns.log"
 
+api:
+    http: "0.0.0.0:9080"
 # ============================================================================
 # DATA PROVIDERS - External domain lists and rules
 # ============================================================================
@@ -441,6 +443,3 @@ servers:
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
         allowed_sni: "dns.bibica.net"
-
-#api:
-#    http: "0.0.0.0:9080"
