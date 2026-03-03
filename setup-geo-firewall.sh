@@ -14,7 +14,7 @@ ALLOW_COUNTRIES=("VN" "SG" "JP" "HK")
 # Services to be protected (ports open to allowed countries)
 ALLOW_TCP_PORTS=("53" "443" "853")
 ALLOW_UDP_PORTS=("53" "443" "853")
-NO_RATELIMIT_TCP_PORTS=("22" "2224")  # GeoIP protected, but no rate-limit (e.g. SSH)
+NO_RATELIMIT_TCP_PORTS=("22" "2224" "9080")  # GeoIP protected, but no rate-limit (e.g. SSH)
 
 # Allow ICMP echo-request (ping) from allowed countries
 ENABLE_PING=false
