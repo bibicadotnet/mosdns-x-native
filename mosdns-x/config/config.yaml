@@ -27,10 +27,6 @@ data_providers:
     file: "rules/cdn_domains.txt"
     auto_reload: true
 
-  - tag: google_domains
-    file: "rules/google_upstream.txt"
-    auto_reload: true
-
   - tag: mullvad_domains
     file: "rules/mullvad_upstream.txt"
     auto_reload: true
@@ -74,13 +70,6 @@ plugins:
   # QUERY MATCHERS - Identify query types and sources
   # ==========================================================================
 
-  # Client source matcher
-  - tag: query_matcher_localhost
-    type: query_matcher
-    args:
-      client_ip:
-        - "127.0.0.0/8"
-
   # Private TLD matcher (RFC 6761)
   - tag: match_domain_private_tld
     type: query_matcher
@@ -94,12 +83,6 @@ plugins:
     args:
       domain:
         - "provider:cdn_domains"
-
-  - tag: match_google_domain
-    type: query_matcher
-    args:
-      domain:
-        - "provider:google_domains"
 
   - tag: match_mullvad_domain
     type: query_matcher
@@ -199,21 +182,12 @@ plugins:
   # ==========================================================================
   # MEMORY CACHE - Per-upstream caching strategy
   # ==========================================================================
-  
-  # Google cache (with ECS support)
-  - tag: google_cache
-    type: cache
-    args:
-      size: 424550 # google_cache
-      lazy_cache_ttl: 259200
-      lazy_cache_reply_ttl: 5
-      cleaner_interval: 60
-      
+
   # CDN direct cache (with ECS support)
   - tag: cdn_direct_cache
     type: cache
     args:
-      size: 283034 # cdn_direct_cache
+      size: 500000 # cdn_direct_cache
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
       cleaner_interval: 62
@@ -222,7 +196,7 @@ plugins:
   - tag: cdn_cname_cache
     type: cache
     args:
-      size: 283034 # cdn_cname_cache
+      size: 10000 # cdn_cname_cache
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
       cleaner_interval: 64
@@ -240,7 +214,7 @@ plugins:
   - tag: cloudflare_cache
     type: cache
     args:
-      size: 849101 # cloudflare_cache
+      size: 100000 # cloudflare_cache
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
       cleaner_interval: 68
@@ -248,42 +222,24 @@ plugins:
   # ==========================================================================
   # UPSTREAM RESOLVERS
   # ==========================================================================
-  
-  - tag: upstream_google
-    type: fast_forward
-    args:
-      upstream:
-        - addr: "tls://8.8.8.8"
-          dial_addr: "8.8.8.8"
-        - addr: "https://8.8.4.4/dns-query"
-          dial_addr: "8.8.4.4"
 
   - tag: upstream_cloudflare
     type: fast_forward
     args:
       upstream:
         - addr: "tls://1.1.1.1"
-          dial_addr: "1.1.1.1"
-        - addr: "https://1.0.0.1/dns-query"
-          dial_addr: "1.0.0.1"
 
   - tag: upstream_cloudflare_gateway
     type: fast_forward
     args:
       upstream:
         - addr: "tls://bu0eg1tdzu.cloudflare-gateway.com"
-          dial_addr: "162.159.36.5"
-        - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
-          dial_addr: "162.159.36.20"
 
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
         - addr: "tls://dns.mullvad.net"
-          dial_addr: "194.242.2.2"
-        - addr: "https://dns.mullvad.net/dns-query"
-          dial_addr: "194.242.2.2"
 
 # ==========================================================================
 # MAIN SEQUENCE - DNS Query Processing Pipeline
@@ -302,7 +258,7 @@ plugins:
         # PHASE 1: Policy Enforcement
         # ====================================================================
 
-        # Block Private TLDs (.local, .lan, etc.)
+        # Block Private TLDs (miwifi, tendawifi, etc.)
         - if: match_domain_private_tld
           exec:
             - _new_nxdomain_response
@@ -328,20 +284,6 @@ plugins:
         # ====================================================================
         
     #    - _query_summary
-
-        # Route: Google domains → Google DNS (with conditional ECS)
-        - if: match_google_domain
-          exec:
-            # Add ECS if not from localhost
-            - if: "!query_matcher_localhost"
-              exec:
-                - ecs_handler
-            - google_cache
-            - upstream_google
-            - _limit_2_ips
-            - ttl_short
-            - _no_cname
-            - _return
 
         # Route: CDN domains → Cloudflare Gateway (with ECS)
         - if: match_cdn_domain
