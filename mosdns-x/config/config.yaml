@@ -7,12 +7,13 @@
 # LOGGING & DIAGNOSTICS
 # ============================================================================
 
-#log:
-#  level: info	# Options: debug, info, error, warn
-#  file: "log/mosdns.log"
+log:
+  level: info	# Options: debug, info, error, warn
+  file: "log/mosdns.log"
 
 api:
     http: "0.0.0.0:9080"
+
 # ============================================================================
 # DATA PROVIDERS - External domain lists and rules
 # ============================================================================
@@ -141,11 +142,6 @@ plugins:
   # RESPONSE MODIFIERS
   # ==========================================================================
 
-  - tag: ttl_short
-    type: ttl
-    args:
-      minimal_ttl: 60
-
   # Ad-blocking blackhole (NULL IP response)
   - tag: black_hole
     type: blackhole
@@ -191,7 +187,7 @@ plugins:
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
       cleaner_interval: 62
-      
+
   # CDN CNAME cache (with ECS support)
   - tag: cdn_cname_cache
     type: cache
@@ -200,7 +196,7 @@ plugins:
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
       cleaner_interval: 64
-      
+
   # Mullvad cache (no ECS)
   - tag: mullvad_cache
     type: cache
@@ -209,7 +205,7 @@ plugins:
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
       cleaner_interval: 66
-      
+
   # Cloudflare cache (no ECS)
   - tag: cloudflare_cache
     type: cache
@@ -222,24 +218,34 @@ plugins:
   # ==========================================================================
   # UPSTREAM RESOLVERS
   # ==========================================================================
+  
+  - tag: upstream_google
+    type: fast_forward
+    args:
+      upstream:
+        - addr: "tls://8.8.8.8"
+        - addr: "https://8.8.4.4/dns-query"
 
   - tag: upstream_cloudflare
     type: fast_forward
     args:
       upstream:
         - addr: "tls://1.1.1.1"
+        - addr: "https://1.0.0.1/dns-query"
 
   - tag: upstream_cloudflare_gateway
     type: fast_forward
     args:
       upstream:
         - addr: "tls://bu0eg1tdzu.cloudflare-gateway.com"
+        - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
 
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
         - addr: "tls://dns.mullvad.net"
+        - addr: "https://dns.mullvad.net/dns-query"
 
 # ==========================================================================
 # MAIN SEQUENCE - DNS Query Processing Pipeline
@@ -282,8 +288,8 @@ plugins:
         # ====================================================================
         # PHASE 3: Query Logging & Routing
         # ====================================================================
-        
-    #    - _query_summary
+
+        - _query_summary
 
         # Route: CDN domains → Cloudflare Gateway (with ECS)
         - if: match_cdn_domain
@@ -292,7 +298,6 @@ plugins:
             - cdn_direct_cache
             - upstream_cloudflare_gateway
             - _limit_2_ips
-            - ttl_short
             - _no_cname
             - _return
 
@@ -302,7 +307,6 @@ plugins:
             - mullvad_cache
             - upstream_mullvad
             - _limit_2_ips
-            - ttl_short
             - _no_cname
             - _return
 
@@ -322,13 +326,11 @@ plugins:
             - upstream_cloudflare_gateway
             - cdn_list_exporter
             - _limit_2_ips
-            - ttl_short
             - _no_cname
             - _return
 
         # Final adjustments for "Everything else" (non-CDN responses from Cloudflare)
         - _limit_2_ips
-        - ttl_short
         - _no_cname
 
 # ============================================================================
