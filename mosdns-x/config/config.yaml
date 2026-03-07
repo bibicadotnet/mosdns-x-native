@@ -7,9 +7,9 @@
 # LOGGING & DIAGNOSTICS
 # ============================================================================
 
-log:
-  level: info	# Options: debug, info, error, warn
-  file: "log/mosdns.log"
+#log:
+#  level: info	# Options: debug, info, error, warn
+#  file: "log/mosdns.log"
 
 api:
     http: "0.0.0.0:9080"
@@ -138,6 +138,13 @@ plugins:
       ip:
         - "provider:gcore_ips"
 
+  # Geo-block detection (upstream returns loopback when ECS reveals blocked region)
+  - tag: response_is_geo_blocked
+    type: response_matcher
+    args:
+      ip:
+        - "127.0.0.1/32"
+
   # ==========================================================================
   # RESPONSE MODIFIERS
   # ==========================================================================
@@ -174,6 +181,11 @@ plugins:
     type: dynamic_domain_collector
     args:
       file: "rules/cdn_domains.txt"
+
+  - tag: geo_blocked_list_exporter
+    type: dynamic_domain_collector
+    args:
+      file: "rules/mullvad_upstream.txt"
 
   # ==========================================================================
   # MEMORY CACHE - Per-upstream caching strategy
@@ -218,34 +230,27 @@ plugins:
   # ==========================================================================
   # UPSTREAM RESOLVERS
   # ==========================================================================
-  
-  - tag: upstream_google
-    type: fast_forward
-    args:
-      upstream:
-        - addr: "tls://8.8.8.8"
-        - addr: "https://8.8.4.4/dns-query"
 
   - tag: upstream_cloudflare
     type: fast_forward
     args:
       upstream:
         - addr: "tls://1.1.1.1"
-        - addr: "https://1.0.0.1/dns-query"
+        - addr: "tls://1.0.0.1"
 
   - tag: upstream_cloudflare_gateway
     type: fast_forward
     args:
       upstream:
         - addr: "tls://bu0eg1tdzu.cloudflare-gateway.com"
-        - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
+        - addr: "tls://rhpcv957tj.cloudflare-gateway.com"
 
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
         - addr: "tls://dns.mullvad.net"
-        - addr: "https://dns.mullvad.net/dns-query"
+        - addr: "tls://adblock.dns.mullvad.net"
 
 # ==========================================================================
 # MAIN SEQUENCE - DNS Query Processing Pipeline
@@ -289,7 +294,7 @@ plugins:
         # PHASE 3: Query Logging & Routing
         # ====================================================================
 
-        - _query_summary
+    #    - _query_summary
 
         # Route: CDN domains → Cloudflare Gateway (with ECS)
         - if: match_cdn_domain
@@ -324,6 +329,15 @@ plugins:
             - ecs_handler
             - cdn_cname_cache
             - upstream_cloudflare_gateway
+            # Geo-block fallback: if ECS causes 127.0.0.1, re-resolve without ECS
+            - if: response_is_geo_blocked
+              exec:
+                - mullvad_cache
+                - upstream_mullvad
+                - geo_blocked_list_exporter
+                - _limit_2_ips
+                - _no_cname
+                - _return
             - cdn_list_exporter
             - _limit_2_ips
             - _no_cname
@@ -341,7 +355,7 @@ servers:
     # Early blocking options
     block_aaaa: false      # Block IPv6 AAAA (28) queries
     block_ptr: true        # Block Reverse DNS PTR (12) queries
-    block_https: true      # Block HTTPS (65) type queries
+    block_https: true     # Block HTTPS (65) type queries
     block_no_dot: true     # Block domains without a dot
     strip_edns0: true      # Strip EDNS0 before processing
 
