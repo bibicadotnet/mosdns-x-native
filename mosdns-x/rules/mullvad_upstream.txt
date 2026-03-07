@@ -1,4 +1,3 @@
-nikke-en.com
 gravatar.com
 github.io
 github.com
@@ -9,5 +8,5 @@ githubassets.com
 steamcommunity.com
 steampowered.com
 steamstatic.com
-surfshark.com
-codeberg.org
+surfshark.comnikke-en.com
+nikke-en.com

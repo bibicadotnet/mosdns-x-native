@@ -20,6 +20,8 @@ localhost
 test
 local
 lan
+fpt
+unused
 plex.direct
 peiluyou.com
 home.arpa
@@ -33,10 +35,11 @@ phicomm.me
 ts.net
 my.router
 192.168.1.1
+in-addr.arpa
+ip6.arpa
 
 # RCODE 3 (NXDOMAIN)
-keepalive.softether.org
+
 
 # RCODE 2 (SERVFAIL)
-odds.luongson.app
 
