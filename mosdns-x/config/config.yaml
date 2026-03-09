@@ -149,6 +149,12 @@ plugins:
   # RESPONSE MODIFIERS
   # ==========================================================================
 
+  - tag: ttl_short
+    type: ttl
+    args:
+      minimal_ttl: 10
+      maximum_ttl: 60
+
   # Ad-blocking blackhole (NULL IP response)
   - tag: black_hole
     type: blackhole
@@ -236,21 +242,27 @@ plugins:
     args:
       upstream:
         - addr: "tls://1.1.1.1"
-        - addr: "tls://1.0.0.1"
+          dial_addr: "1.1.1.1"
+        - addr: "https://1.0.0.1/dns-query"
+          dial_addr: "1.0.0.1"
 
   - tag: upstream_cloudflare_gateway
     type: fast_forward
     args:
       upstream:
         - addr: "tls://bu0eg1tdzu.cloudflare-gateway.com"
-        - addr: "tls://rhpcv957tj.cloudflare-gateway.com"
+          dial_addr: "162.159.36.5"
+        - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
+          dial_addr: "162.159.36.20"
 
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
         - addr: "tls://dns.mullvad.net"
-        - addr: "tls://adblock.dns.mullvad.net"
+          dial_addr: "194.242.2.2"
+        - addr: "https://dns.mullvad.net/dns-query"
+          dial_addr: "194.242.2.2"
 
 # ==========================================================================
 # MAIN SEQUENCE - DNS Query Processing Pipeline
@@ -303,6 +315,7 @@ plugins:
             - cdn_direct_cache
             - upstream_cloudflare_gateway
             - _limit_2_ips
+            - ttl_short
             - _no_cname
             - _return
 
@@ -312,6 +325,7 @@ plugins:
             - mullvad_cache
             - upstream_mullvad
             - _limit_2_ips
+            - ttl_short
             - _no_cname
             - _return
 
@@ -336,15 +350,18 @@ plugins:
                 - upstream_mullvad
                 - geo_blocked_list_exporter
                 - _limit_2_ips
+                - ttl_short
                 - _no_cname
                 - _return
             - cdn_list_exporter
             - _limit_2_ips
+            - ttl_short
             - _no_cname
             - _return
 
         # Final adjustments for "Everything else" (non-CDN responses from Cloudflare)
         - _limit_2_ips
+        - ttl_short
         - _no_cname
 
 # ============================================================================
@@ -353,9 +370,9 @@ plugins:
 servers:
   - exec: main
     # Early blocking options
-    block_aaaa: false      # Block IPv6 AAAA (28) queries
+    block_aaaa: true       # Block IPv6 AAAA (28) queries
     block_ptr: true        # Block Reverse DNS PTR (12) queries
-    block_https: true     # Block HTTPS (65) type queries
+    block_https: true      # Block HTTPS (65) type queries
     block_no_dot: true     # Block domains without a dot
     strip_edns0: true      # Strip EDNS0 before processing
 
@@ -376,7 +393,6 @@ servers:
         redirect_url: "https://bibica.net/dns-mien-phi-tu-dns-bibica-net/"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
-        allowed_sni: "dns.bibica.net"
 
       # DNS-over-HTTP/3 (DoH3)
       - protocol: h3
@@ -386,18 +402,15 @@ servers:
         redirect_url: "https://bibica.net/dns-mien-phi-tu-dns-bibica-net/"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
-        allowed_sni: "dns.bibica.net"
 
       # DNS-over-TLS (DoT)
       - protocol: tls
         addr: "0.0.0.0:853"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
-        allowed_sni: "dns.bibica.net"
 
       # DNS-over-QUIC (DoQ)
       - protocol: quic
         addr: "0.0.0.0:853"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
-        allowed_sni: "dns.bibica.net"
