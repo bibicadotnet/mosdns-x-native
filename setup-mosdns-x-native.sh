@@ -292,12 +292,12 @@ update_mosdns_config() {
     
     print_info "Total RAM: ${total_ram_mb} MB | Cache: ${cache_ram_mb} MB (70%)"
     
-    local cdn_direct=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.2 * 1024}")
-    local cdn_cname=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.2 * 1024}")
-    local google=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.3 * 1024}")
+    local cdn_direct=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.6 * 1024}")
+    local cdn_cname=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.1 * 1024}")
+  #  local google=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.3 * 1024}")
     local cloudflare=$(awk "BEGIN {printf \"%.0f\", $cache_ram_mb * 0.3 * 1024 * 2}")
     
-    sed -i "s/size: [0-9]* # google_cache/size: $google # google_cache/" /home/mosdns-x/config/config.yaml
+  #  sed -i "s/size: [0-9]* # google_cache/size: $google # google_cache/" /home/mosdns-x/config/config.yaml
     sed -i "s/size: [0-9]* # cdn_direct_cache/size: $cdn_direct # cdn_direct_cache/" /home/mosdns-x/config/config.yaml
     sed -i "s/size: [0-9]* # cdn_cname_cache/size: $cdn_cname # cdn_cname_cache/" /home/mosdns-x/config/config.yaml
     sed -i "s/size: [0-9]* # cloudflare_cache/size: $cloudflare # cloudflare_cache/" /home/mosdns-x/config/config.yaml
