@@ -6,12 +6,12 @@
 # ============================================================================
 # LOGGING
 # ============================================================================
-log:
-  level: info	# Options: debug, info, error, warn
-  file: "log/mosdns.log"
+#log:
+#  level: info	# Options: debug, info, error, warn
+#  file: "log/mosdns.log"
 
-api:
-    http: "0.0.0.0:9080"
+#api:
+#    http: "0.0.0.0:9080"
 
 # ============================================================================
 # DATA PROVIDERS - External domain lists and rules
@@ -334,7 +334,7 @@ plugins:
         # PHASE 4: Query Logging & Routing
         # ====================================================================
         
-        - _query_summary
+    #    - _query_summary
 
         # Route: CDN domains → Cloudflare Gateway (with ECS)
         - if: match_cdn_domain
