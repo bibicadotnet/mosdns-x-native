@@ -4,12 +4,11 @@
 # =============================================================================
 
 # ============================================================================
-# LOGGING & DIAGNOSTICS
+# LOGGING
 # ============================================================================
-
-#log:
-#  level: info	# Options: debug, info, error, warn
-#  file: "log/mosdns.log"
+log:
+  level: info	# Options: debug, info, error, warn
+  file: "log/mosdns.log"
 
 api:
     http: "0.0.0.0:9080"
@@ -70,6 +69,22 @@ plugins:
   # ==========================================================================
   # QUERY MATCHERS - Identify query types and sources
   # ==========================================================================
+  
+  # Query type matchers
+  - tag: query_is_ptr
+    type: query_matcher
+    args:
+      qtype: [12] # PTR (reverse DNS)
+
+  - tag: query_is_ipv6
+    type: query_matcher
+    args:
+      qtype: [28] # AAAA (IPv6)
+
+  - tag: query_is_https
+    type: query_matcher
+    args:
+      qtype: [65] # HTTPS record
 
   # Private TLD matcher (RFC 6761)
   - tag: match_domain_private_tld
@@ -149,19 +164,12 @@ plugins:
   # RESPONSE MODIFIERS
   # ==========================================================================
 
-  - tag: ttl_short
-    type: ttl
-    args:
-      minimal_ttl: 10
-      maximum_ttl: 60
-
   # Ad-blocking blackhole (NULL IP response)
   - tag: black_hole
     type: blackhole
     args:
       rcode: 0
       ipv4: ["0.0.0.0"]
-      ipv6: ["::"]
 
   # ==========================================================================
   # ECS & DNS PROCESSING
@@ -180,20 +188,6 @@ plugins:
         - "provider:redirect_rules"
 
   # ==========================================================================
-  # DYNAMIC COLLECTOR - Self-learning CDN domains
-  # ==========================================================================
-
-  - tag: cdn_list_exporter
-    type: dynamic_domain_collector
-    args:
-      file: "rules/cdn_domains.txt"
-
-  - tag: geo_blocked_list_exporter
-    type: dynamic_domain_collector
-    args:
-      file: "rules/mullvad_upstream.txt"
-
-  # ==========================================================================
   # MEMORY CACHE - Per-upstream caching strategy
   # ==========================================================================
 
@@ -201,37 +195,41 @@ plugins:
   - tag: cdn_direct_cache
     type: cache
     args:
-      size: 500000 # cdn_direct_cache
+      size: 283034 # cdn_direct_cache
+      compress_resp: false
+      cache_everything: true
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
-      cleaner_interval: 62
 
   # CDN CNAME cache (with ECS support)
   - tag: cdn_cname_cache
     type: cache
     args:
-      size: 10000 # cdn_cname_cache
+      size: 283034 # cdn_cname_cache
+      compress_resp: false
+      cache_everything: true
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
-      cleaner_interval: 64
 
   # Mullvad cache (no ECS)
   - tag: mullvad_cache
     type: cache
     args:
       size: 1024 # mullvad_cache
+      compress_resp: false
+      cache_everything: false
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
-      cleaner_interval: 66
 
   # Cloudflare cache (no ECS)
   - tag: cloudflare_cache
     type: cache
     args:
-      size: 100000 # cloudflare_cache
+      size: 849101 # cloudflare_cache
+      compress_resp: false
+      cache_everything: false
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
-      cleaner_interval: 68
 
   # ==========================================================================
   # UPSTREAM RESOLVERS
@@ -264,28 +262,64 @@ plugins:
         - addr: "https://dns.mullvad.net/dns-query"
           dial_addr: "194.242.2.2"
 
-# ==========================================================================
-# MAIN SEQUENCE - DNS Query Processing Pipeline
-# ==========================================================================
+  # ==========================================================================
+  # MAIN SEQUENCE - DNS Query Processing Pipeline
+  # ==========================================================================
   
   - tag: main
     type: sequence
     args:
       exec:
-
-        # Note: Pre-processing (Strip EDNS0, Block ANY/AAAA/PTR/HTTPS, 
-        # Domain validation, and Lowercase conversion) are now handled 
-        # NATIVELY at the server level for maximum performance
+        # ====================================================================
+        # PHASE 1: Request Validation & Filtering
+        # ====================================================================
         
-        # ====================================================================
-        # PHASE 1: Policy Enforcement
-        # ====================================================================
+        # Reject deprecated ANY queries (ANY 255)
+        - _reject_any
 
-        # Block Private TLDs (miwifi, tendawifi, etc.)
+        # Block IPv6 queries (AAAA 28)
+        #- if: query_is_ipv6
+        #  exec:
+        #    - _new_empty_response
+        #    - _return
+
+        # Block reverse DNS (PTR 12)
+        - if: query_is_ptr
+          exec:
+            - _new_empty_response
+            - _return
+
+        # Block HTTPS record queries (HTTPS 65)
+        - if: query_is_https
+          exec:
+            - _new_empty_response
+            - _return
+
+        # Block private TLDs (.local, .localhost, etc.)
         - if: match_domain_private_tld
           exec:
             - _new_nxdomain_response
             - _return
+
+        # ====================================================================
+        # PHASE 2: Query Preparation
+        # ====================================================================
+        
+        # Remove client ECS
+        - _no_ecs
+
+        # Clean EDNS0 options
+        - _edns0_filter_no_edns0
+
+        # Apply performance optimizations
+        - _misc_optm
+
+        # Apply DNS rewrites (local overrides)
+        - dns_redirect
+
+        # ====================================================================
+        # PHASE 3: Ad-Blocking
+        # ====================================================================
 
         # Block ads/trackers (unless allowlisted)
         - if: "!match_allowlisted"
@@ -296,17 +330,10 @@ plugins:
                 - _return
 
         # ====================================================================
-        # PHASE 2: Local Processing
+        # PHASE 4: Query Logging & Routing
         # ====================================================================
-
-        # Apply DNS rewrites (local overrides)
-        - dns_redirect
-
-        # ====================================================================
-        # PHASE 3: Query Logging & Routing
-        # ====================================================================
-
-    #    - _query_summary
+        
+        - _query_summary
 
         # Route: CDN domains → Cloudflare Gateway (with ECS)
         - if: match_cdn_domain
@@ -314,9 +341,6 @@ plugins:
             - ecs_handler
             - cdn_direct_cache
             - upstream_cloudflare_gateway
-            - _limit_2_ips
-            - ttl_short
-            - _no_cname
             - _return
 
         # Route: Mullvad domains → Mullvad DNS
@@ -324,9 +348,6 @@ plugins:
           exec:
             - mullvad_cache
             - upstream_mullvad
-            - _limit_2_ips
-            - ttl_short
-            - _no_cname
             - _return
 
         # Route: Everything else → Cloudflare DNS (default)
@@ -334,7 +355,7 @@ plugins:
         - upstream_cloudflare
 
         # ====================================================================
-        # PHASE 4: CDN Detection & Re-resolution
+        # PHASE 5: CDN Detection & Re-resolution
         # ====================================================================
 
         # Re-resolve if response has CDN CNAME OR any CDN IP (CloudFront/Fastly/BunnyCDN/Gcore)
@@ -348,34 +369,14 @@ plugins:
               exec:
                 - mullvad_cache
                 - upstream_mullvad
-                - geo_blocked_list_exporter
-                - _limit_2_ips
-                - ttl_short
-                - _no_cname
                 - _return
-            - cdn_list_exporter
-            - _limit_2_ips
-            - ttl_short
-            - _no_cname
             - _return
-
-        # Final adjustments for "Everything else" (non-CDN responses from Cloudflare)
-        - _limit_2_ips
-        - ttl_short
-        - _no_cname
 
 # ============================================================================
 # SERVERS - Protocol Listeners
 # ============================================================================
 servers:
   - exec: main
-    # Early blocking options
-    block_aaaa: true       # Block IPv6 AAAA (28) queries
-    block_ptr: true        # Block Reverse DNS PTR (12) queries
-    block_https: true      # Block HTTPS (65) type queries
-    block_no_dot: true     # Block domains without a dot
-    strip_edns0: true      # Strip EDNS0 before processing
-
     listeners:
       # DNS-over-UDP
       - protocol: udp
@@ -389,8 +390,6 @@ servers:
       - protocol: https
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
-        health_path: "/health"
-        redirect_url: "https://bibica.net/dns-mien-phi-tu-dns-bibica-net/"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
 
@@ -398,8 +397,6 @@ servers:
       - protocol: h3
         addr: "0.0.0.0:443"
         url_path: "/dns-query"
-        health_path: "/health"
-        redirect_url: "https://bibica.net/dns-mien-phi-tu-dns-bibica-net/"
         cert: "/home/lego/certificates/dns.bibica.net.crt"
         key: "/home/lego/certificates/dns.bibica.net.key"
 
