@@ -1,5 +1,5 @@
 # =============================================================================
-# Mosdns-x PR (Privacy & Resilience) Configuration for dns.bibica.net
+# Mosdns-x Configuration for dns.bibica.net
 # Architecture: Clean DNS, ECS CDN, Domain Routing with Memory Cache
 # =============================================================================
 
