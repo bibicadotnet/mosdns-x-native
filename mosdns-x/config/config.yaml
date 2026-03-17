@@ -1,11 +1,12 @@
 # =============================================================================
-# Mosdns-x Configuration for dns.bibica.net
+# Mosdns-x PR (Privacy & Resilience) Configuration for dns.bibica.net
 # Architecture: Clean DNS, ECS CDN, Domain Routing with Memory Cache
 # =============================================================================
 
 # ============================================================================
 # LOGGING
 # ============================================================================
+
 #log:
 #  level: info	# Options: debug, info, error, warn
 #  file: "log/mosdns.log"
@@ -305,11 +306,8 @@ plugins:
         # ====================================================================
         # PHASE 2: Query Preparation
         # ====================================================================
-        
-        # Remove client ECS
-        - _no_ecs
 
-        # Clean EDNS0 options
+        # Clean EDNS0 options (Remove client ECS)
         - _edns0_filter_no_edns0
 
         # Apply performance optimizations
@@ -334,7 +332,7 @@ plugins:
         # PHASE 4: Query Logging & Routing
         # ====================================================================
         
-    #    - _query_summary
+        #- _query_summary
 
         # Route: CDN domains → Cloudflare Gateway (with ECS)
         - if: match_cdn_domain
