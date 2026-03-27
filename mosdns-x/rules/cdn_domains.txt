@@ -396,6 +396,9 @@ tiktokv.us
 tiktok.com
 ttwstatic.com
 photobucket.com
+twimg.com
+pscp.tv
+x.com
 keyword:cdn
 
 # DYNAMIC COLLECTOR
