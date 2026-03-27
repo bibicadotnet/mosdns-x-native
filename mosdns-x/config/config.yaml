@@ -280,10 +280,10 @@ plugins:
         - _reject_any
 
         # Block IPv6 queries (AAAA 28)
-        #- if: query_is_ipv6
-        #  exec:
-        #    - _new_empty_response
-        #    - _return
+        - if: query_is_ipv6
+          exec:
+            - _new_empty_response
+            - _return
 
         # Block reverse DNS (PTR 12)
         - if: query_is_ptr
