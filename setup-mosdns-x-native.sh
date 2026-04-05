@@ -167,12 +167,12 @@ install_mosdns() {
         *) print_error "Unsupported architecture: $arch"; exit 1 ;;
     esac
     
-    local latest=$(curl -s https://api.github.com/repos/bibicadotnet/mosdns-x/releases/latest \
+    local latest=$(curl -s https://api.github.com/repos/pmkol/mosdns-x/releases/latest \
         | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
     
     [[ -z "$latest" ]] && { print_error "Failed to get MosDNS-X version"; exit 1; }
     
-    curl -sL "https://github.com/bibicadotnet/mosdns-x/releases/download/${latest}/mosdns-linux-${arch}.zip" \
+    curl -sL "https://github.com/pmkol/mosdns-x/releases/download/${latest}/mosdns-linux-${arch}.zip" \
         -o /tmp/mosdns.zip || { print_error "Download failed"; exit 1; }
     
     unzip -qo /tmp/mosdns.zip mosdns -d /tmp
@@ -412,8 +412,8 @@ case "$1" in
         armv7l) MOSDNS_ARCH="armv7" ;;
     esac
     
-    LATEST=$(curl -s https://api.github.com/repos/bibicadotnet/mosdns-x/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
-    curl -sL "https://github.com/bibicadotnet/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" -o /tmp/mosdns.zip
+    LATEST=$(curl -s https://api.github.com/repos/pmkol/mosdns-x/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p')
+    curl -sL "https://github.com/pmkol/mosdns-x/releases/download/${LATEST}/mosdns-linux-${MOSDNS_ARCH}.zip" -o /tmp/mosdns.zip
     unzip -qo /tmp/mosdns.zip mosdns -d /tmp
     systemctl stop mosdns
     mv /tmp/mosdns /home/mosdns-x/mosdns
