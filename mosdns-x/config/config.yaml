@@ -197,7 +197,7 @@ plugins:
   - tag: cdn_direct_cache
     type: cache
     args:
-      size: 283034 # cdn_direct_cache
+      size: 413491 # cdn_direct_cache
       compress_resp: false
       cache_everything: true
       lazy_cache_ttl: 259200
@@ -207,7 +207,7 @@ plugins:
   - tag: cdn_cname_cache
     type: cache
     args:
-      size: 283034 # cdn_cname_cache
+      size: 413491 # cdn_cname_cache
       compress_resp: false
       cache_everything: true
       lazy_cache_ttl: 259200
@@ -227,7 +227,7 @@ plugins:
   - tag: cloudflare_cache
     type: cache
     args:
-      size: 849101 # cloudflare_cache
+      size: 413491 # cloudflare_cache
       compress_resp: false
       cache_everything: false
       lazy_cache_ttl: 259200
@@ -242,27 +242,21 @@ plugins:
     args:
       upstream:
         - addr: "tls://1.1.1.1"
-          dial_addr: "1.1.1.1"
         - addr: "https://1.0.0.1/dns-query"
-          dial_addr: "1.0.0.1"
 
   - tag: upstream_cloudflare_gateway
     type: fast_forward
     args:
       upstream:
         - addr: "tls://bu0eg1tdzu.cloudflare-gateway.com"
-          dial_addr: "162.159.36.5"
         - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
-          dial_addr: "162.159.36.20"
 
   - tag: upstream_mullvad
     type: fast_forward
     args:
       upstream:
         - addr: "tls://dns.mullvad.net"
-          dial_addr: "194.242.2.2"
         - addr: "https://dns.mullvad.net/dns-query"
-          dial_addr: "194.242.2.2"
 
   # ==========================================================================
   # MAIN SEQUENCE - DNS Query Processing Pipeline
@@ -277,25 +271,25 @@ plugins:
         # ====================================================================
         
         # Reject deprecated ANY queries (ANY 255)
-        - _reject_any
+    #    - _reject_any
 
         # Block IPv6 queries (AAAA 28)
-        - if: query_is_ipv6
-          exec:
-            - _new_empty_response
-            - _return
+    #    - if: query_is_ipv6
+    #      exec:
+    #        - _new_empty_response
+    #        - _return
 
         # Block reverse DNS (PTR 12)
-        - if: query_is_ptr
-          exec:
-            - _new_empty_response
-            - _return
+    #    - if: query_is_ptr
+    #      exec:
+    #        - _new_empty_response
+    #        - _return
 
         # Block HTTPS record queries (HTTPS 65)
-        - if: query_is_https
-          exec:
-            - _new_empty_response
-            - _return
+    #    - if: query_is_https
+    #      exec:
+    #        - _new_empty_response
+    #        - _return
 
         # Block private TLDs (.local, .localhost, etc.)
         - if: match_domain_private_tld
