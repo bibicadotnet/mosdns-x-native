@@ -141,7 +141,7 @@ install_lego() {
     esac
     
     local release_url=$(curl -s https://api.github.com/repos/go-acme/lego/releases/latest \
-        | grep browser_download_url | grep "_${os}_${arch}.tar.gz" | cut -d'"' -f4)
+        | grep browser_download_url | grep "_${os}_${arch}.tar.gz\"" | cut -d'"' -f4)
     
     [[ -z "$release_url" ]] && { print_error "Failed to get Lego URL"; exit 1; }
     
@@ -440,7 +440,7 @@ case "$1" in
     echo ""
     
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    RELEASE_URL=$(curl -s https://api.github.com/repos/go-acme/lego/releases/latest | grep browser_download_url | grep "_${OS}_${MOSDNS_ARCH}.tar.gz" | cut -d'"' -f4)
+    RELEASE_URL=$(curl -s https://api.github.com/repos/go-acme/lego/releases/latest | grep browser_download_url | grep "_${OS}_${MOSDNS_ARCH}.tar.gz\"" | cut -d'"' -f4)
     curl -sL "$RELEASE_URL" -o /tmp/lego.tar.gz
     tar -xzf /tmp/lego.tar.gz -C /tmp
     mv /tmp/lego /home/lego/lego
