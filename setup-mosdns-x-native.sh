@@ -211,19 +211,23 @@ obtain_or_renew_certificate() {
     cd /home/lego
     > "$log_file"
     
-    local cmd="run"
-    [[ -f "$cert_file" ]] && cmd="renew"
+    local action="Obtaining"
+    [[ -f "$cert_file" ]] && action="Renewing"
     
-    print_info "${cmd^}ing certificate..."
+    print_info "${action} certificate..."
     
     CLOUDFLARE_DNS_API_TOKEN="$token" \
-        /home/lego/lego --accept-tos \
+        /home/lego/lego run \
+        --path /home/lego \
+        --accept-tos \
         --dns cloudflare \
+        --dns.resolvers 1.1.1.1:53 \
+        --dns.resolvers 9.9.9.9:53 \
         --domains "$domain" \
         --domains "*.$domain" \
         --email "$email" \
-        --path /home/lego \
-        $cmd --preferred-chain="ISRG Root X1" > "$log_file" 2>&1 &
+        --ari-disable \
+        --preferred-chain="ISRG Root X1" > "$log_file" 2>&1 &
     
     local lego_pid=$!
     tail -f "$log_file" 2>/dev/null &
@@ -361,19 +365,30 @@ echo "Certificate for $DOMAIN expires in $DAYS_LEFT days."
 
 if [[ $DAYS_LEFT -lt $RENEW_DAYS ]]; then
     echo "Days left is below threshold ($RENEW_DAYS). Attempting renewal..."
-    
+
     cd /home/lego
-    
-    # Run lego and check exit status directly
+
+    # Lego v5: 'renew' command removed - 'run' now handles issuance/renewal.
+    # --ari-disable: avoids ARI 'replaces' validation errors when the local
+    # account doesn't exactly match the account that issued the current cert.
+    # --dns.resolvers: this machine runs its own DNS server (MosDNS-X) on
+    # port 53, which can intercept/cache lookups and make lego's own
+    # propagation check see stale/incorrect TXT records. Force lego to use
+    # public external resolvers instead of the system/local default.
     if CLOUDFLARE_DNS_API_TOKEN="$API_TOKEN" \
-        /home/lego/lego --accept-tos \
+        /home/lego/lego run \
+        --path /home/lego \
+        --accept-tos \
         --dns cloudflare \
+        --dns.resolvers 1.1.1.1:53 \
+        --dns.resolvers 9.9.9.9:53 \
         --domains "$DOMAIN" \
         --domains "*.$DOMAIN" \
         --email "admin@${DOMAIN}" \
-        --path /home/lego \
-        renew --days "$RENEW_DAYS" --preferred-chain="ISRG Root X1"; then
-        
+        --renew-days "$RENEW_DAYS" \
+        --ari-disable \
+        --preferred-chain="ISRG Root X1"; then
+
         echo "Success: Certificate renewed! Mosdns-x will hot-reload automatically."
     else
         echo "Failure: Lego renewal process failed!"
