@@ -28,8 +28,8 @@ data_providers:
     file: "rules/cdn_domains.txt"
     auto_reload: true
 
-  - tag: mullvad_domains
-    file: "rules/mullvad_upstream.txt"
+  - tag: quad9_domains
+    file: "rules/quad9_upstream.txt"
     auto_reload: true
 
   # CDN IP ranges
@@ -101,11 +101,11 @@ plugins:
       domain:
         - "provider:cdn_domains"
 
-  - tag: match_mullvad_domain
+  - tag: match_quad9_domain
     type: query_matcher
     args:
       domain:
-        - "provider:mullvad_domains"
+        - "provider:quad9_domains"
 
   # Content filtering matchers
   - tag: match_allowlisted
@@ -213,11 +213,11 @@ plugins:
       lazy_cache_ttl: 259200
       lazy_cache_reply_ttl: 5
 
-  # Mullvad cache (no ECS)
-  - tag: mullvad_cache
+  # Quad9 cache (no ECS)
+  - tag: quad9_cache
     type: cache
     args:
-      size: 1024 # mullvad_cache
+      size: 1024 # quad9_cache
       compress_resp: false
       cache_everything: false
       lazy_cache_ttl: 259200
@@ -251,12 +251,12 @@ plugins:
         - addr: "tls://bu0eg1tdzu.cloudflare-gateway.com"
         - addr: "https://rhpcv957tj.cloudflare-gateway.com/dns-query"
 
-  - tag: upstream_mullvad
+  - tag: upstream_quad9
     type: fast_forward
     args:
       upstream:
-        - addr: "tls://dns.mullvad.net"
-        - addr: "https://dns.mullvad.net/dns-query"
+        - addr: "tls://dns.quad9.net"
+        - addr: "https://dns.quad9.net/dns-query"
 
   # ==========================================================================
   # MAIN SEQUENCE - DNS Query Processing Pipeline
@@ -336,11 +336,11 @@ plugins:
             - upstream_cloudflare_gateway
             - _return
 
-        # Route: Mullvad domains → Mullvad DNS
-        - if: match_mullvad_domain
+        # Route: Quad9 domains → Quad9 DNS
+        - if: match_quad9_domain
           exec:
-            - mullvad_cache
-            - upstream_mullvad
+            - quad9_cache
+            - upstream_quad9
             - _return
 
         # Route: Everything else → Cloudflare DNS (default)
@@ -360,8 +360,8 @@ plugins:
             # Geo-block fallback: if ECS causes 127.0.0.1, re-resolve without ECS
             - if: response_is_geo_blocked
               exec:
-                - mullvad_cache
-                - upstream_mullvad
+                - quad9_cache
+                - upstream_quad9
                 - _return
             - _return
 
