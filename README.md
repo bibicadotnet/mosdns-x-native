@@ -1,3 +1,5 @@
 # mosdns-x-native
 
-17/03/2026: sử dụng bản mosdns-x mặc định
+```
+wget -qO /home/setup-mosdns-x-native.sh https://go.bibica.net/mosdns-x && sudo bash /home/setup-mosdns-x-native.sh
+```
