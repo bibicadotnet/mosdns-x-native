@@ -36,3 +36,6 @@ pornhub.com www.pornhub.com
 deo.shopeemobile.com deo.shopeemobile.com-v1.edgesuite.net
 cf.shopee.vn cf.shopee.vn.akamaized.net
 down-vn.img.susercontent.com zshopee.v.baishan-cloud.net
+
+# voz.vn
+voz.vn rocket.net
