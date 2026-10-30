@@ -41,6 +41,16 @@ ip6.arpa
 192.168.1.1
 192.168.1.0
 
+# iOS/iPad OS Blocking Updates
+appldnld.apple.com
+appldnld.apple.com.akadns.net
+appldnld.g.aaplimg.com
+mesu.apple.com
+mesu-cdn.apple.com.akadns.net
+mesu.g.aaplimg.com
+gdmf.apple.com
+gdmf.v.aaplimg.com
+
 # RCODE 3 (NXDOMAIN)
 
 
