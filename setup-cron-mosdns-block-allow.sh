@@ -63,6 +63,7 @@ https://badmojr.github.io/1Hosts/Lite/adblock.txt \
 # Download allowlist in parallel
 curl -fsSL --compressed --max-time 30 \
 https://raw.githubusercontent.com/bibicadotnet/AdGuard-Home-blocklists/refs/heads/main/whitelist.txt \
+https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/refs/heads/master/Whitelists/Whitelist \
 | extract_domains > "$ALLOW_TMP" &
 
 # Download AWS CloudFront IP ranges
