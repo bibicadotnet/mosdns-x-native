@@ -39,3 +39,6 @@ down-vn.img.susercontent.com zshopee.v.baishan-cloud.net
 
 # voz.vn
 voz.vn rocket.net
+
+# nikke-en.com
+nikke-en.com orzzutfk.ovslegodl.sched.ovscdns.com
